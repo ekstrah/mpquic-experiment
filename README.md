@@ -1,0 +1,172 @@
+# mpquic-experiment
+
+Client/server platform for testing reliability of data transfer over
+**multiple network paths using QUIC**, with **pluggable congestion control**
+per path. Go, runs on Linux/Ubuntu (and Windows, for local dev).
+
+## How it works
+
+There is no off-the-shelf Go library that gives you both real IETF
+multipath QUIC (single connection, multiple paths) *and* a maintained,
+pluggable-congestion-control QUIC stack (see "Why not `mp-quic`" below). So
+multipath here is **application-level connection bonding**: the client opens
+one independent QUIC connection per configured local path (source IP/NIC) to
+the server, and a pluggable **scheduler** decides which path each chunk of
+the payload goes out on. Independent connections mean a stall on one path
+can't Head-of-Line-block another path — see "Why not MPTCP" below.
+
+```
+client                                          server
+  ├─ path 0 (QUIC conn, local IP #1) ──────┐
+  ├─ path 1 (QUIC conn, local IP #2) ──────┼──▶ one UDP listener,
+  └─ path N (QUIC conn, local IP #N) ──────┘    N correlated connections
+```
+
+1. Client generates `-size` bytes of random data and its SHA-256 hash.
+2. It opens one QUIC connection per `-local` address, each with its own
+   congestion control module (`-cc`).
+3. Path 0's stream carries a `ControlHeader` (session ID, total size, chunk
+   size, scheduler name, hash). Every other path's stream carries a
+   `PathHello` (session ID, path index) so the server can correlate multiple
+   connections into one logical transfer.
+4. The chosen `-scheduler` assigns each chunk to one or more paths
+   (`redundant` assigns every chunk to every path).
+5. The server reassembles chunks by byte offset (idempotent — duplicate
+   writes from a redundant scheduler are ignored), and once everything has
+   arrived, verifies the SHA-256 hash. **This is the reliability check.**
+6. Both sides write a results record (per-path + aggregate: bytes, chunks,
+   duration, throughput, integrity) to stdout, JSON, and CSV.
+
+### Why not MPTCP?
+
+A related study (Baltaci et al., IEEE Access 2023, 10.1109/ACCESS.2023.3325702)
+bonding cellular + LEO satellite links found MPTCP suffers excessive
+retransmissions from Head-of-Line blocking: one shared, in-order byte stream
+across paths means a stall on one path stalls delivery on the other. Running
+each path as an independent QUIC connection avoids that coupling entirely.
+
+### Why not `mp-quic` (the academic multipath QUIC fork)?
+
+`qdeconinck/mp-quic` and derivatives implement real single-connection
+multipath, but are forked from a 2018-era, pre-RFC9000 QUIC draft and are
+effectively unmaintained (one candidate fork even has unresolved `<<<<<<<`
+git conflict markers committed into `go.mod`). Mainline `quic-go` is RFC 9000
+and actively maintained, but only supports connection *migration* (one
+active path at a time, `path_manager.go`), not concurrent multipath, and its
+congestion control lives in `internal/congestion` — unusable from outside
+the module. This project vendors mainline `quic-go` and patches just enough
+to expose pluggable congestion control (see below), then does multipath at
+the application layer instead.
+
+## The `quic-go` patch
+
+`third_party/quic-go` is a vendored copy of `quic-go@v0.61.0` with one small,
+mechanical diff (referenced via `replace` in `go.mod`, so re-vendoring a
+newer release later is a re-apply of the same edits):
+
+1. `internal/congestion` → `congestion` (public package, visibility move
+   only — no algorithm logic changed).
+2. `congestion/types.go` adds type aliases (`ByteCount`, `PacketNumber`,
+   `Time`, `RTTStats`, `ConnectionStats`) so external code implementing the
+   `SendAlgorithm` interface never has to import `internal/protocol` or
+   `internal/utils` directly.
+3. `ackhandler.NewSentPacketHandler` takes a `CongestionControlFactory`
+   parameter (defaults to Cubic if nil); `connection.go`'s `MigratedPath`
+   reuses the same factory instead of hardcoding Cubic.
+4. `quic.Config` gained a `CongestionControlFactory` field, threaded through
+   both connection-setup call sites in `connection.go`.
+
+## Layout
+
+```
+third_party/quic-go/          vendored + patched quic-go
+internal/
+  ccmodules/                  pluggable congestion control: registry.go, cubic.go, custom_template.go
+  scheduler/                  pluggable path scheduler: roundrobin.go, redundant.go, rtt_aware.go
+  transfer/                   wire protocol: session.go (control/hello preambles), chunk.go (split/reassemble/hash)
+  metrics/                    per-path + aggregate results: JSON/CSV/console output
+  tlsconfig/                  self-signed TLS setup (QUIC requires TLS 1.3)
+cmd/
+  server/main.go
+  client/main.go
+```
+
+## Build
+
+```sh
+go build -o bin/server ./cmd/server
+go build -o bin/client ./cmd/client
+```
+
+## Run
+
+Server:
+
+```sh
+./bin/server -listen :4433 -out server-results
+```
+
+Client, striping across two local interfaces (e.g. two NICs, or two IPs on
+one NIC — Windows/Linux both treat all of `127.0.0.0/8` as loopback, so
+`127.0.0.1`/`127.0.0.2` work for a same-machine dry run):
+
+```sh
+./bin/client -server <server-ip>:4433 \
+  -local 192.168.1.10,10.0.0.5 \
+  -size 10485760 \
+  -scheduler roundrobin \
+  -cc cubic,fixed \
+  -out client-results
+```
+
+### Flags
+
+**`cmd/server`**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-listen` | `:4433` | UDP address to listen on |
+| `-out` | `server-results` | output file prefix (`-results.json` / `-results.csv`) |
+| `-progress-interval` | `1s` | console progress print interval |
+
+**`cmd/client`**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-server` | *(required)* | server address, `host:port` |
+| `-local` | *(one path, OS-chosen address)* | comma-separated local source IPs, one per path |
+| `-size` | `10485760` | total payload size in bytes (randomly generated) |
+| `-chunk-size` | `32768` | chunk size in bytes |
+| `-scheduler` | `roundrobin` | `roundrobin`, `redundant`, or `rtt-aware` |
+| `-cc` | `cubic` | congestion control per path: one name for all paths, or a comma-separated list matching the number of paths (`cubic`, `fixed`) |
+| `-out` | `client-results` | output file prefix |
+| `-progress-interval` | `1s` | console progress print interval |
+
+The **server-side `integrity_ok`** in the results is the authoritative
+reliability check (it verifies the SHA-256 of what it actually reassembled).
+The client-side result reports `integrity_ok=n/a` since it has no way to
+know if the server's reassembly matched.
+
+## Adding a congestion control module
+
+Copy `internal/ccmodules/custom_template.go`, rename `fixedWindowSender`,
+implement the real logic in `OnPacketAcked` / `OnCongestionEvent` /
+`GetCongestionWindow` (see `congestion.SendAlgorithmWithDebugInfos` in
+`third_party/quic-go/congestion/interface.go` for the full method set), and
+change the registered name in its `init()`. Select it with `-cc=<name>`.
+
+## Adding a scheduler
+
+Implement `scheduler.Scheduler` (`Assign(chunkSeq uint64, paths []PathInfo) []int`)
+in a new file under `internal/scheduler/`, following `roundrobin.go` as a
+template, and register it in `init()`. Select it with `-scheduler=<name>`.
+
+## Known limitations / next steps
+
+- Paths are real local NICs/IPs only for now — no netns/tc-based link
+  emulation (latency/loss/bandwidth impairment) yet.
+- The server buffers the whole payload in memory (see the `ponytail:`
+  comment in `internal/transfer/chunk.go` — swap to a temp file + `WriteAt`
+  for transfer sizes beyond available RAM).
+- Only the client selects congestion control per path; the server doesn't
+  send bulk data in this protocol, so it has nothing to control.
