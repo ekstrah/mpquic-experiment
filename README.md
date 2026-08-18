@@ -186,6 +186,37 @@ scoped to one burst instead of the whole session -- see
   -out client-results
 ```
 
+#### Constant-bitrate (video-like) streaming
+
+Setting `-burst-min-size` equal to `-burst-max-size` removes the random
+sizing (`sendBurst` only adds jitter when `max > min`) and gives a fixed
+size sent at a fixed interval -- structurally the same shape as one video
+frame sent every frame period, i.e. a constant-bitrate (CBR) stream. This
+is the traffic model to reach for when comparing against work that used
+CBR video/RTP-style traffic rather than bursty traffic -- e.g. Baltaci et
+al. (IEEE Access 2023, 10.1109/ACCESS.2023.3325702, see "Why not MPTCP"
+above) generated their MP-DCCP video traffic as a constant-bitrate flow
+specifically to avoid confounding adaptive-bitrate behavior with the
+transport layer's own congestion control, the same reasoning that applies
+here.
+
+Compute burst size from a target bitrate and frame rate:
+
+```
+bytes per frame = (bitrate in bits/sec) / 8 / (frames per second)
+```
+
+e.g. 10 Mbps at 30fps: `10_000_000 / 8 / 30 ≈ 41667` bytes every `1/30 s ≈ 33ms`:
+
+```sh
+./bin/client -server <server-ip>:4433 -continuous \
+  -duration 60s -burst-min-size 41667 -burst-max-size 41667 -burst-interval 33ms \
+  -out client-results
+```
+
+Verified on loopback: 61 "frames" over ~2s, every one exactly 41667 bytes,
+landing ~33ms apart in `-bursts.csv`'s `start_ms` column.
+
 Results are reported incrementally rather than once at the end (a
 continuous session may run indefinitely): both sides append one row per
 completed (or timed-out-incomplete) burst to `<out>-bursts.csv` as the
