@@ -52,7 +52,7 @@ func main() {
 	}
 
 	log.Printf("client: generating %d byte random payload", *size)
-	payload, hash, err := transfer.GenerateRandomPayload(*size)
+	payload, err := transfer.GenerateRandomPayload(*size)
 	if err != nil {
 		log.Fatalf("client: %v", err)
 	}
@@ -65,7 +65,6 @@ func main() {
 		ChunkSize: uint32(*chunkSize),
 		NumPaths:  uint32(numPaths),
 		Scheduler: *schedName,
-		Hash:      hash,
 	}
 
 	paths := make([]*pathConn, numPaths)

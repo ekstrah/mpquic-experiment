@@ -6,7 +6,7 @@ import (
 )
 
 func TestSplitAndReassemble(t *testing.T) {
-	payload, hash, err := GenerateRandomPayload(100_000)
+	payload, err := GenerateRandomPayload(100_000)
 	if err != nil {
 		t.Fatalf("GenerateRandomPayload: %v", err)
 	}
@@ -16,8 +16,8 @@ func TestSplitAndReassemble(t *testing.T) {
 	for _, c := range chunks {
 		r.Write(c)
 	}
-	if !r.VerifyHash(hash) {
-		t.Fatal("reassembled payload hash mismatch")
+	if !r.Complete() {
+		t.Fatal("reassembler never reported complete")
 	}
 	if !bytes.Equal(r.Bytes(), payload) {
 		t.Fatal("reassembled payload bytes mismatch")
@@ -28,7 +28,7 @@ func TestSplitAndReassemble(t *testing.T) {
 }
 
 func TestReassemblerOutOfOrderAndDuplicate(t *testing.T) {
-	payload, hash, err := GenerateRandomPayload(10_000)
+	payload, err := GenerateRandomPayload(10_000)
 	if err != nil {
 		t.Fatalf("GenerateRandomPayload: %v", err)
 	}
@@ -44,8 +44,8 @@ func TestReassemblerOutOfOrderAndDuplicate(t *testing.T) {
 	if !complete {
 		t.Fatal("reassembler never reported complete")
 	}
-	if !r.VerifyHash(hash) {
-		t.Fatal("reassembled payload hash mismatch after out-of-order + duplicate writes")
+	if !bytes.Equal(r.Bytes(), payload) {
+		t.Fatal("reassembled payload bytes mismatch after out-of-order + duplicate writes")
 	}
 	if got := r.ReceivedBytes(); got != uint64(len(payload)) {
 		t.Fatalf("ReceivedBytes = %d, want %d (duplicate must not double-count)", got, len(payload))
@@ -64,5 +64,24 @@ func TestChunkWireRoundTrip(t *testing.T) {
 	}
 	if got.Seq != c.Seq || got.Offset != c.Offset || !bytes.Equal(got.Data, c.Data) {
 		t.Fatalf("round-tripped chunk = %+v, want %+v", got, c)
+	}
+	if !got.VerifyChecksum() {
+		t.Fatal("round-tripped chunk failed checksum verification")
+	}
+}
+
+func TestChunkVerifyChecksumDetectsCorruption(t *testing.T) {
+	c := Chunk{Seq: 1, Offset: 0, Data: []byte("hello world")}
+	var buf bytes.Buffer
+	if err := WriteChunk(&buf, c); err != nil {
+		t.Fatalf("WriteChunk: %v", err)
+	}
+	got, err := ReadChunk(&buf)
+	if err != nil {
+		t.Fatalf("ReadChunk: %v", err)
+	}
+	got.Data[0] ^= 0xFF // flip a bit, simulating on-the-wire corruption
+	if got.VerifyChecksum() {
+		t.Fatal("VerifyChecksum should have caught the corrupted byte")
 	}
 }

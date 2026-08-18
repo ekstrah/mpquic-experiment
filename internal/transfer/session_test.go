@@ -12,7 +12,6 @@ func TestControlHeaderWireRoundTrip(t *testing.T) {
 		ChunkSize: 4096,
 		NumPaths:  2,
 		Scheduler: "roundrobin",
-		Hash:      [32]byte{1, 2, 3},
 	}
 	var buf bytes.Buffer
 	if err := WriteControlHeader(&buf, h); err != nil {

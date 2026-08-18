@@ -4,6 +4,11 @@ Client/server platform for testing reliability of data transfer over
 **multiple network paths using QUIC**, with **pluggable congestion control**
 per path. Go, runs on Linux/Ubuntu (and Windows, for local dev).
 
+> New to this codebase? This README is the quick-start / user-facing
+> reference. For wire-format byte layouts, the connection lifecycle,
+> concurrency model, and the non-obvious bugs already found and fixed here,
+> see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ## How it works
 
 There is no off-the-shelf Go library that gives you both real IETF
@@ -22,20 +27,29 @@ client                                          server
   └─ path N (QUIC conn, local IP #N) ──────┘    N correlated connections
 ```
 
-1. Client generates `-size` bytes of random data and its SHA-256 hash.
+1. Client generates `-size` bytes of random data.
 2. It opens one QUIC connection per `-local` address, each with its own
    congestion control module (`-cc`).
 3. Path 0's stream carries a `ControlHeader` (session ID, total size, chunk
-   size, scheduler name, hash). Every other path's stream carries a
-   `PathHello` (session ID, path index) so the server can correlate multiple
-   connections into one logical transfer.
+   size, scheduler name). Every other path's stream carries a `PathHello`
+   (session ID, path index) so the server can correlate multiple connections
+   into one logical transfer.
 4. The chosen `-scheduler` assigns each chunk to one or more paths
-   (`redundant` assigns every chunk to every path).
+   (`redundant` assigns every chunk to every path). Each chunk carries its
+   own CRC32 checksum, verified independently as it arrives — there's no
+   single whole-transfer hash, so a corrupted chunk doesn't invalidate
+   anything else, and verification never waits for a "last" chunk.
 5. The server reassembles chunks by byte offset (idempotent — duplicate
-   writes from a redundant scheduler are ignored), and once everything has
-   arrived, verifies the SHA-256 hash. **This is the reliability check.**
-6. Both sides write a results record (per-path + aggregate: bytes, chunks,
-   duration, throughput, integrity) to stdout, JSON, and CSV.
+   writes from a redundant scheduler are ignored, and a corrupted chunk is
+   discarded rather than reassembled, in case a good copy still arrives on
+   another path). **This per-chunk checksum plus full-delivery check is the
+   reliability check.**
+6. Once a path's stream cleanly closes, the client waits for the server to
+   confirm delivery (a small drain ack) before tearing down that path's
+   connection, so in-flight tail data can't be lost to a premature close.
+7. Both sides write a results record (per-path + aggregate: bytes, chunks,
+   chunks corrupted, duration, throughput, integrity) to stdout, JSON, and
+   CSV.
 
 ### Why not MPTCP?
 
@@ -83,7 +97,7 @@ third_party/quic-go/          vendored + patched quic-go
 internal/
   ccmodules/                  pluggable congestion control: registry.go, cubic.go, custom_template.go
   scheduler/                  pluggable path scheduler: roundrobin.go, redundant.go, rtt_aware.go
-  transfer/                   wire protocol: session.go (control/hello preambles), chunk.go (split/reassemble/hash)
+  transfer/                   wire protocol: session.go (control/hello preambles), chunk.go (split/reassemble/checksum)
   metrics/                    per-path + aggregate results: JSON/CSV/console output
   tlsconfig/                  self-signed TLS setup (QUIC requires TLS 1.3)
 cmd/
@@ -143,9 +157,11 @@ one NIC — Windows/Linux both treat all of `127.0.0.0/8` as loopback, so
 | `-progress-interval` | `1s` | console progress print interval |
 
 The **server-side `integrity_ok`** in the results is the authoritative
-reliability check (it verifies the SHA-256 of what it actually reassembled).
-The client-side result reports `integrity_ok=n/a` since it has no way to
-know if the server's reassembly matched.
+reliability check: `true` iff every chunk it received passed its CRC32
+checksum and every expected chunk arrived at least once (`chunks_corrupted`
+in the CSV/JSON breaks out how many failed the checksum, per path). The
+client-side result reports `integrity_ok=n/a` since it has no way to know
+whether the server's checks passed.
 
 ## Adding a congestion control module
 

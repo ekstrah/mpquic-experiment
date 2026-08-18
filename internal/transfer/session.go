@@ -30,7 +30,6 @@ type ControlHeader struct {
 	ChunkSize uint32
 	NumPaths  uint32
 	Scheduler string
-	Hash      [32]byte // SHA-256 of the full payload
 }
 
 func (h ControlHeader) Encode(w io.Writer) error {
@@ -49,10 +48,8 @@ func (h ControlHeader) Encode(w io.Writer) error {
 	if err := binary.Write(w, binary.BigEndian, uint16(len(h.Scheduler))); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(w, h.Scheduler); err != nil {
-		return err
-	}
-	return binary.Write(w, binary.BigEndian, h.Hash)
+	_, err := io.WriteString(w, h.Scheduler)
+	return err
 }
 
 func ReadControlHeader(r io.Reader) (ControlHeader, error) {
@@ -78,9 +75,6 @@ func ReadControlHeader(r io.Reader) (ControlHeader, error) {
 		return h, err
 	}
 	h.Scheduler = string(sched)
-	if err := binary.Read(r, binary.BigEndian, &h.Hash); err != nil {
-		return h, err
-	}
 	return h, nil
 }
 

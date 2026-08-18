@@ -2,30 +2,37 @@ package transfer
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"sync"
 )
 
-// GenerateRandomPayload creates size bytes of random data and returns it
-// along with its SHA-256 hash, which the receiver uses as the reliability
-// (integrity) check.
-func GenerateRandomPayload(size uint64) ([]byte, [32]byte, error) {
+// GenerateRandomPayload creates size bytes of random data.
+func GenerateRandomPayload(size uint64) ([]byte, error) {
 	data := make([]byte, size)
 	if _, err := rand.Read(data); err != nil {
-		return nil, [32]byte{}, fmt.Errorf("transfer: generating random payload: %w", err)
+		return nil, fmt.Errorf("transfer: generating random payload: %w", err)
 	}
-	return data, sha256.Sum256(data), nil
+	return data, nil
 }
 
 // Chunk is one piece of the payload, addressed by its byte offset so the
 // receiver can place it correctly regardless of arrival order across paths.
+// Checksum is a CRC32 of Data, verified independently per chunk -- there is
+// no whole-transfer hash, so chunks don't need a known total size or a
+// uniform size, and verification never has to wait for a "last" chunk.
 type Chunk struct {
-	Seq    uint64
-	Offset uint64
-	Data   []byte
+	Seq      uint64
+	Offset   uint64
+	Checksum uint32
+	Data     []byte
+}
+
+// VerifyChecksum reports whether Data still matches Checksum.
+func (c Chunk) VerifyChecksum() bool {
+	return crc32.ChecksumIEEE(c.Data) == c.Checksum
 }
 
 // Split slices data into chunkSize-sized chunks (the last one may be
@@ -47,7 +54,8 @@ func Split(data []byte, chunkSize uint32) []Chunk {
 	return chunks
 }
 
-// WriteChunk writes one length-prefixed chunk frame to a path stream.
+// WriteChunk writes one length-prefixed chunk frame to a path stream. The
+// checksum is computed here from c.Data, so callers never set it themselves.
 func WriteChunk(w io.Writer, c Chunk) error {
 	if err := binary.Write(w, binary.BigEndian, c.Seq); err != nil {
 		return err
@@ -58,11 +66,17 @@ func WriteChunk(w io.Writer, c Chunk) error {
 	if err := binary.Write(w, binary.BigEndian, uint32(len(c.Data))); err != nil {
 		return err
 	}
+	if err := binary.Write(w, binary.BigEndian, crc32.ChecksumIEEE(c.Data)); err != nil {
+		return err
+	}
 	_, err := w.Write(c.Data)
 	return err
 }
 
-// ReadChunk reads one length-prefixed chunk frame from a path stream.
+// ReadChunk reads one length-prefixed chunk frame from a path stream. It
+// does not verify the checksum -- call Chunk.VerifyChecksum, since a
+// mismatch is a data-integrity event for the caller to count, not a framing
+// error that should abort reading the rest of the stream.
 func ReadChunk(r io.Reader) (Chunk, error) {
 	var c Chunk
 	if err := binary.Read(r, binary.BigEndian, &c.Seq); err != nil {
@@ -73,6 +87,9 @@ func ReadChunk(r io.Reader) (Chunk, error) {
 	}
 	var n uint32
 	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
+		return c, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &c.Checksum); err != nil {
 		return c, err
 	}
 	c.Data = make([]byte, n)
@@ -146,7 +163,9 @@ func (r *Reassembler) Bytes() []byte {
 	return r.buf
 }
 
-// VerifyHash reports whether the reassembled payload matches expected.
-func (r *Reassembler) VerifyHash(expected [32]byte) bool {
-	return sha256.Sum256(r.Bytes()) == expected
+// Complete reports whether every chunk has been received at least once.
+func (r *Reassembler) Complete() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.remaining == 0
 }

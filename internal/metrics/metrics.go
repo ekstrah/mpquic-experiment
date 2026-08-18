@@ -14,13 +14,14 @@ import (
 
 // PathStats is the per-path breakdown of one run.
 type PathStats struct {
-	Index      int           `json:"index"`
-	LocalAddr  string        `json:"local_addr"`
-	RemoteAddr string        `json:"remote_addr"`
-	Bytes      uint64        `json:"bytes"`
-	Chunks     int           `json:"chunks"`
-	Duration   time.Duration `json:"duration_ns"`
-	CC         string        `json:"congestion_control"`
+	Index           int           `json:"index"`
+	LocalAddr       string        `json:"local_addr"`
+	RemoteAddr      string        `json:"remote_addr"`
+	Bytes           uint64        `json:"bytes"`
+	Chunks          int           `json:"chunks"`
+	ChunksCorrupted int           `json:"chunks_corrupted"`
+	Duration        time.Duration `json:"duration_ns"`
+	CC              string        `json:"congestion_control"`
 }
 
 // RunResult is the full record of one transfer, from either side.
@@ -66,14 +67,16 @@ func (r RunResult) WriteCSV(path string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	header := []string{"session_id", "role", "path_index", "local_addr", "remote_addr", "bytes", "chunks", "duration_ms", "congestion_control", "scheduler", "integrity_ok"}
+	header := []string{"session_id", "role", "path_index", "local_addr", "remote_addr", "bytes", "chunks", "chunks_corrupted", "duration_ms", "congestion_control", "scheduler", "integrity_ok"}
 	if err := w.Write(header); err != nil {
 		return err
 	}
+	var corruptedTotal int
 	for _, p := range r.Paths {
+		corruptedTotal += p.ChunksCorrupted
 		row := []string{
 			r.SessionID, r.Role, strconv.Itoa(p.Index), p.LocalAddr, p.RemoteAddr,
-			strconv.FormatUint(p.Bytes, 10), strconv.Itoa(p.Chunks),
+			strconv.FormatUint(p.Bytes, 10), strconv.Itoa(p.Chunks), strconv.Itoa(p.ChunksCorrupted),
 			strconv.FormatInt(p.Duration.Milliseconds(), 10), p.CC, r.Scheduler,
 			strconv.FormatBool(r.IntegrityOK),
 		}
@@ -83,7 +86,7 @@ func (r RunResult) WriteCSV(path string) error {
 	}
 	aggregate := []string{
 		r.SessionID, r.Role, "-1", "", "",
-		strconv.FormatUint(r.TotalBytes, 10), "",
+		strconv.FormatUint(r.TotalBytes, 10), "", strconv.Itoa(corruptedTotal),
 		strconv.FormatInt(r.Duration.Milliseconds(), 10), "", r.Scheduler,
 		strconv.FormatBool(r.IntegrityOK),
 	}
@@ -100,8 +103,8 @@ func (r RunResult) Print() {
 	fmt.Printf("total: %d bytes in %s (%.2f Mbps), integrity_ok=%s, scheduler=%s\n",
 		r.TotalBytes, r.Duration, r.ThroughputMbps, integrity, r.Scheduler)
 	for _, p := range r.Paths {
-		fmt.Printf("  path %d [%s -> %s] cc=%s: %d bytes, %d chunks, %s\n",
-			p.Index, p.LocalAddr, p.RemoteAddr, p.CC, p.Bytes, p.Chunks, p.Duration)
+		fmt.Printf("  path %d [%s -> %s] cc=%s: %d bytes, %d chunks (%d corrupted), %s\n",
+			p.Index, p.LocalAddr, p.RemoteAddr, p.CC, p.Bytes, p.Chunks, p.ChunksCorrupted, p.Duration)
 	}
 }
 

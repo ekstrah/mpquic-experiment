@@ -90,6 +90,7 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 
 	var bytesReceived uint64
 	var chunks int
+	var corrupted int
 	var readErr error
 	pathStart := time.Now()
 	for {
@@ -103,6 +104,11 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 		}
 		chunks++
 		bytesReceived += uint64(len(chunk.Data))
+		if !chunk.VerifyChecksum() {
+			corrupted++
+			log.Printf("server: session %x path %d: chunk %d failed checksum, discarding", sessID, pathIndex, chunk.Seq)
+			continue // don't hand corrupted data to the reassembler; a good copy may still arrive (e.g. via a redundant scheduler)
+		}
 		sess.reassembler.Write(chunk)
 		sess.progress.Update(sess.reassembler.ReceivedBytes())
 		sess.deliveryLog.Add(metrics.DeliverySample{
@@ -116,12 +122,13 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 	log.Printf("server: session %x path %d done: %d bytes, smoothed_rtt=%s", sessID, pathIndex, bytesReceived, conn.ConnectionStats().SmoothedRTT)
 
 	sess.pathDone(metrics.PathStats{
-		Index:      pathIndex,
-		LocalAddr:  conn.LocalAddr().String(),
-		RemoteAddr: conn.RemoteAddr().String(),
-		Bytes:      bytesReceived,
-		Chunks:     chunks,
-		Duration:   time.Since(pathStart),
+		Index:           pathIndex,
+		LocalAddr:       conn.LocalAddr().String(),
+		RemoteAddr:      conn.RemoteAddr().String(),
+		Bytes:           bytesReceived,
+		Chunks:          chunks,
+		ChunksCorrupted: corrupted,
+		Duration:        time.Since(pathStart),
 	})
 
 	// A clean EOF here is proof-positive that every byte the client wrote on
@@ -222,7 +229,11 @@ func (s *serverSession) pathDone(p metrics.PathStats) {
 
 func (s *serverSession) finalize() {
 	s.progress.Close()
-	ok := s.reassembler.VerifyHash(s.ctrl.Hash)
+	var corrupted int
+	for _, p := range s.pathResults {
+		corrupted += p.ChunksCorrupted
+	}
+	ok := corrupted == 0 && s.reassembler.Complete()
 
 	result := metrics.RunResult{
 		Role:        "server",
