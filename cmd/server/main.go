@@ -49,7 +49,16 @@ func main() {
 }
 
 func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
-	defer conn.CloseWithError(0, "")
+	// closeNow stays true (connection is closed as soon as this function
+	// returns) except on the clean-completion path below, where closing
+	// immediately after writing the drain ack would race CloseWithError
+	// against that write actually reaching the client.
+	closeNow := true
+	defer func() {
+		if closeNow {
+			conn.CloseWithError(0, "")
+		}
+	}()
 
 	stream, err := conn.AcceptStream(context.Background())
 	if err != nil {
@@ -81,10 +90,12 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 
 	var bytesReceived uint64
 	var chunks int
+	var readErr error
 	pathStart := time.Now()
 	for {
 		chunk, err := transfer.ReadChunk(stream)
 		if err != nil {
+			readErr = err
 			if !errors.Is(err, io.EOF) {
 				log.Printf("server: session %x path %d: read chunk: %v", sessID, pathIndex, err)
 			}
@@ -112,6 +123,22 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 		Chunks:     chunks,
 		Duration:   time.Since(pathStart),
 	})
+
+	// A clean EOF here is proof-positive that every byte the client wrote on
+	// this stream, up to and including the FIN, was delivered in order (QUIC
+	// streams are strictly ordered and reliable). Tell the client so it can
+	// safely close this path's connection without racing a still-in-flight
+	// tail write against a force-close. Leave the connection open afterward
+	// (closeNow stays false) so this ack isn't itself abandoned mid-flight;
+	// the client's own close (or, failing that, the idle timeout) tears it
+	// down once the ack has had a chance to land.
+	if errors.Is(readErr, io.EOF) {
+		if _, err := stream.Write([]byte{1}); err != nil {
+			log.Printf("server: session %x path %d: write drain ack: %v", sessID, pathIndex, err)
+		} else {
+			closeNow = false
+		}
+	}
 }
 
 // sessionRegistry tracks in-flight and finished sessions.

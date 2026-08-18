@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -114,9 +115,7 @@ func main() {
 	stopRTT()
 	rttWG.Wait()
 
-	for _, pc := range paths {
-		pc.stream.Close()
-	}
+	drainPaths(paths)
 
 	result := buildResult(sessID, ctrl, paths, start)
 	result.Print()
@@ -128,6 +127,45 @@ func main() {
 	}
 	if err := metrics.WriteRTTSamplesCSV(*outPrefix+"-client-rtt.csv", rttLog.Snapshot()); err != nil {
 		log.Printf("client: write rtt csv: %v", err)
+	}
+}
+
+// drainTimeout bounds how long drainPath waits for the server's delivery
+// confirmation before giving up and closing anyway.
+const drainTimeout = 5 * time.Second
+
+// drainPaths closes every path's stream write-side and waits (concurrently,
+// one path's stall shouldn't block another) for the server's delivery
+// confirmation before the caller closes the underlying connections. This is
+// the piece that was missing before: SendStream.Close() only schedules the
+// FIN, it doesn't wait for it (or any trailing data) to be sent or acked,
+// so closing the QUIC connection right after used to race in-flight tail
+// chunks against CloseWithError abandoning them.
+func drainPaths(paths []*pathConn) {
+	var wg sync.WaitGroup
+	for _, pc := range paths {
+		wg.Add(1)
+		go func(pc *pathConn) {
+			defer wg.Done()
+			drainPath(pc)
+		}(pc)
+	}
+	wg.Wait()
+}
+
+// drainPath closes pc's stream and blocks until the server's 1-byte drain
+// ack arrives, proving every chunk (and the FIN) was received in order.
+func drainPath(pc *pathConn) {
+	if err := pc.stream.Close(); err != nil {
+		log.Printf("client: path %d: closing stream: %v", pc.index, err)
+		return
+	}
+	if err := pc.stream.SetReadDeadline(time.Now().Add(drainTimeout)); err != nil {
+		log.Printf("client: path %d: set read deadline: %v", pc.index, err)
+	}
+	var ack [1]byte
+	if _, err := io.ReadFull(pc.stream, ack[:]); err != nil {
+		log.Printf("client: path %d: no delivery confirmation from server (%v) -- some tail data may not have arrived", pc.index, err)
 	}
 }
 
