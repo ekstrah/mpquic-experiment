@@ -23,7 +23,10 @@ func NewSessionID() SessionID {
 }
 
 // ControlHeader is sent once, as the first message on path index 0, and
-// describes the whole transfer.
+// describes the whole session. TotalSize is 0 for a continuous session
+// (one with no known total ahead of time, made up of independently-sized
+// bursts -- see BurstTracker); a one-shot (-size) session sends its real
+// total and is reassembled with a Reassembler as before.
 type ControlHeader struct {
 	SessionID SessionID
 	TotalSize uint64

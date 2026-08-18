@@ -155,6 +155,10 @@ one NIC — Windows/Linux both treat all of `127.0.0.0/8` as loopback, so
 | `-cc` | `cubic` | congestion control per path: one name for all paths, or a comma-separated list matching the number of paths (`cubic`, `fixed`) |
 | `-out` | `client-results` | output file prefix |
 | `-progress-interval` | `1s` | console progress print interval |
+| `-continuous` | `false` | stream continuously as variable-size bursts instead of one fixed `-size` transfer (`-size` is ignored when set) |
+| `-duration` | `0` | `-continuous` only: how long to keep streaming (`0` = until Ctrl+C) |
+| `-burst-min-size` / `-burst-max-size` | `4096` / `1048576` | `-continuous` only: each burst's size is drawn uniformly at random from this range, in bytes |
+| `-burst-interval` | `1s` | `-continuous` only: time between bursts |
 
 The **server-side `integrity_ok`** in the results is the authoritative
 reliability check: `true` iff every chunk it received passed its CRC32
@@ -162,6 +166,34 @@ checksum and every expected chunk arrived at least once (`chunks_corrupted`
 in the CSV/JSON breaks out how many failed the checksum, per path). The
 client-side result reports `integrity_ok=n/a` since it has no way to know
 whether the server's checks passed.
+
+### Continuous mode
+
+`-continuous` is for simulating a link that never has one clean "transfer
+done" moment -- closer to a real telemetry stream than a one-shot benchmark:
+most traffic is small, punctuated by occasional large bursts (e.g. a drone
+sending routine sensor readings, then an image). Each burst is sized
+uniformly at random in `[-burst-min-size, -burst-max-size]`, sent one
+`-burst-interval` apart, and verified independently (per-chunk CRC32 plus
+full-byte-count delivery, same integrity model as one-shot mode, just
+scoped to one burst instead of the whole session -- see
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for how).
+
+```sh
+./bin/server -listen :4433 -out server-results
+./bin/client -server <server-ip>:4433 -continuous \
+  -duration 60s -burst-min-size 4096 -burst-max-size 1048576 -burst-interval 1s \
+  -out client-results
+```
+
+Results are reported incrementally rather than once at the end (a
+continuous session may run indefinitely): both sides append one row per
+completed (or timed-out-incomplete) burst to `<out>-bursts.csv` as the
+session runs. `-results.json`/`-results.csv` are one-shot-only and aren't
+written in this mode. Ctrl+C (or `-duration` elapsing) stops the client
+gracefully -- in-flight bursts finish, then paths drain and close the same
+way one-shot mode's do. The server handles Ctrl+C the same way: whatever
+bursts it's currently tracking get flushed to `-bursts.csv` before it exits.
 
 ## Adding a congestion control module
 
@@ -180,9 +212,20 @@ template, and register it in `init()`. Select it with `-scheduler=<name>`.
 ## Known limitations / next steps
 
 - Paths are real local NICs/IPs only for now — no netns/tc-based link
-  emulation (latency/loss/bandwidth impairment) yet.
-- The server buffers the whole payload in memory (see the `ponytail:`
-  comment in `internal/transfer/chunk.go` — swap to a temp file + `WriteAt`
-  for transfer sizes beyond available RAM).
+  emulation (latency/loss/bandwidth impairment) yet, and no dynamic
+  add/remove of paths mid-session (needs multi-NIC hardware to exercise;
+  `drainPath`/`drainPaths` in `cmd/client/main.go` are already the right
+  primitive to retire a path safely once this is picked up).
+- The server buffers the whole payload in memory for **one-shot** (`-size`)
+  transfers (see the `ponytail:` comment in `internal/transfer/chunk.go` —
+  swap to a temp file + `WriteAt` for transfer sizes beyond available RAM).
+  `-continuous` mode doesn't have this problem — it never buffers a burst's
+  bytes, only tracks arrival counts (`internal/transfer/burst.go`).
+- `-continuous` mode's burst sizes are drawn from a uniform
+  `[-burst-min-size, -burst-max-size]` range, not a modeled traffic shape
+  (e.g. mostly-small with occasional large spikes); burst content is
+  synthetic random data, not real files/sensor input. Both can be layered
+  on top of the existing `BurstID`/`BurstBytes` wire framing later without
+  another protocol change.
 - Only the client selects congestion control per path; the server doesn't
   send bulk data in this protocol, so it has nothing to control.

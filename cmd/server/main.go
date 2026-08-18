@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
@@ -19,6 +22,16 @@ import (
 	"mpquic-experiment/internal/tlsconfig"
 	"mpquic-experiment/internal/transfer"
 )
+
+// burstTTL bounds how long a continuous session's BurstTracker will wait
+// for more chunks of a given burst before treating it as abandoned
+// (connection dropped mid-burst) and reporting it incomplete.
+const burstTTL = 5 * time.Second
+
+// burstSweepInterval is how often a continuous session checks for bursts
+// that have gone idle past burstTTL, and rewrites that session's bursts.csv
+// with whatever's accumulated so far.
+const burstSweepInterval = time.Second
 
 func main() {
 	listenAddr := flag.String("listen", ":4433", "UDP address to listen on")
@@ -38,6 +51,20 @@ func main() {
 	log.Printf("server: listening on %s", ln.Addr())
 
 	registry := newSessionRegistry(*progressEvery)
+
+	// A continuous session has no natural "every path hit EOF" moment to
+	// finalize at while the client keeps streaming, so an operator killing
+	// the server needs its own graceful path: flush whatever's accumulated
+	// for every still-running continuous session before the process exits.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Printf("server: shutting down, flushing active sessions")
+		registry.shutdownAll()
+		os.Exit(0)
+	}()
+
 	for {
 		conn, err := ln.Accept(context.Background())
 		if err != nil {
@@ -104,13 +131,26 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 		}
 		chunks++
 		bytesReceived += uint64(len(chunk.Data))
-		if !chunk.VerifyChecksum() {
+		corrupt := !chunk.VerifyChecksum()
+		if corrupt {
 			corrupted++
 			log.Printf("server: session %x path %d: chunk %d failed checksum, discarding", sessID, pathIndex, chunk.Seq)
-			continue // don't hand corrupted data to the reassembler; a good copy may still arrive (e.g. via a redundant scheduler)
 		}
-		sess.reassembler.Write(chunk)
-		sess.progress.Update(sess.reassembler.ReceivedBytes())
+		switch {
+		case sess.burstTracker != nil:
+			// Continuous session: route to the per-burst tracker regardless
+			// of corrupt (it counts corrupted chunks itself), since there's
+			// no session-wide reassembler in this mode.
+			sess.burstTracker.Write(chunk, corrupt)
+		case !corrupt:
+			sess.reassembler.Write(chunk)
+		}
+		if corrupt {
+			continue // a good copy may still arrive (e.g. via a redundant scheduler)
+		}
+		if sess.progress != nil {
+			sess.progress.Update(sess.reassembler.ReceivedBytes())
+		}
 		sess.deliveryLog.Add(metrics.DeliverySample{
 			SessionID: fmt.Sprintf("%x", sessID),
 			PathIndex: pathIndex,
@@ -170,19 +210,41 @@ func (r *sessionRegistry) getOrCreate(id transfer.SessionID, outPrefix string) *
 	return s
 }
 
+// shutdownAll force-flushes every still-active continuous session, for use
+// when the server process itself is being interrupted mid-session (the
+// client may still be streaming). One-shot sessions have no partial-result
+// concept and are left alone -- the process exiting is no different from
+// today's behavior for them.
+func (r *sessionRegistry) shutdownAll() {
+	r.mu.Lock()
+	sessions := make([]*serverSession, 0, len(r.sessions))
+	for _, s := range r.sessions {
+		sessions = append(sessions, s)
+	}
+	r.mu.Unlock()
+	for _, s := range sessions {
+		s.shutdownContinuous()
+	}
+}
+
 type serverSession struct {
 	id            transfer.SessionID
 	outPrefix     string
 	progressEvery time.Duration
 
-	mu          sync.Mutex
-	ctrl        *transfer.ControlHeader
-	ready       chan struct{}
-	readyClosed bool
-	reassembler *transfer.Reassembler
-	progress    *metrics.ProgressPrinter
-	startTime   time.Time
-	deliveryLog metrics.SampleLog[metrics.DeliverySample]
+	mu           sync.Mutex
+	ctrl         *transfer.ControlHeader
+	ready        chan struct{}
+	readyClosed  bool
+	reassembler  *transfer.Reassembler  // one-shot (-size) sessions only
+	burstTracker *transfer.BurstTracker // continuous sessions only
+	progress     *metrics.ProgressPrinter
+	startTime    time.Time
+	deliveryLog  metrics.SampleLog[metrics.DeliverySample]
+
+	burstLog     metrics.SampleLog[metrics.BurstSample]
+	stopSweep    chan struct{}
+	stopSweepOne sync.Once
 
 	wg          sync.WaitGroup
 	pathResults []metrics.PathStats
@@ -196,17 +258,84 @@ func (s *serverSession) start(ctrl transfer.ControlHeader) {
 		return
 	}
 	s.ctrl = &ctrl
-	s.reassembler = transfer.NewReassembler(ctrl.TotalSize, ctrl.ChunkSize)
-	s.progress = metrics.NewProgressPrinter(ctrl.TotalSize, s.progressEvery)
 	s.startTime = time.Now()
+	if ctrl.TotalSize == 0 {
+		s.burstTracker = transfer.NewBurstTracker(burstTTL)
+		s.stopSweep = make(chan struct{})
+		go s.burstSweepLoop()
+	} else {
+		s.reassembler = transfer.NewReassembler(ctrl.TotalSize, ctrl.ChunkSize)
+		s.progress = metrics.NewProgressPrinter(ctrl.TotalSize, s.progressEvery)
+	}
 	s.wg.Add(int(ctrl.NumPaths))
 	s.readyClosed = true
 	close(s.ready)
 
 	go func() {
 		s.wg.Wait()
-		s.finalize()
+		if s.burstTracker != nil {
+			s.shutdownContinuous()
+		} else {
+			s.finalize()
+		}
 	}()
+}
+
+// burstSweepLoop periodically reports (and forgets) any burst that's gone
+// idle past burstTTL, and rewrites this session's bursts.csv with whatever
+// has accumulated so far -- a continuous session may run indefinitely, so
+// results can't wait for a single "the end" the way a one-shot session's do.
+func (s *serverSession) burstSweepLoop() {
+	ticker := time.NewTicker(burstSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.recordBursts(s.burstTracker.Expire())
+		case <-s.stopSweep:
+			return
+		}
+	}
+}
+
+func (s *serverSession) recordBursts(stats []transfer.BurstStats) {
+	if len(stats) == 0 {
+		return
+	}
+	sessIDStr := fmt.Sprintf("%x", s.id)
+	for _, b := range stats {
+		s.burstLog.Add(metrics.BurstSample{
+			SessionID:     sessIDStr,
+			Role:          "server",
+			BurstID:       b.BurstID,
+			BytesExpected: b.BytesExpected,
+			BytesReceived: b.BytesReceived,
+			Chunks:        b.Chunks,
+			Corrupted:     b.Corrupted,
+			Complete:      b.Complete,
+			StartMs:       b.StartedAt.Sub(s.startTime).Milliseconds(),
+			EndMs:         b.LastActivity.Sub(s.startTime).Milliseconds(),
+		})
+		if !b.Complete {
+			log.Printf("server: session %x burst %d incomplete: %d/%d bytes (%d corrupted)",
+				s.id, b.BurstID, b.BytesReceived, b.BytesExpected, b.Corrupted)
+		}
+	}
+	if err := metrics.WriteBurstSamplesCSV(s.outPrefix+"-bursts.csv", s.burstLog.Snapshot()); err != nil {
+		log.Printf("server: session %x: write bursts csv: %v", s.id, err)
+	}
+}
+
+// shutdownContinuous stops the sweep loop and force-flushes every
+// remaining burst, whether complete or not. Safe to call more than once
+// (e.g. once from wg.Wait() finishing, once from process shutdown racing
+// it) -- only the first call does anything.
+func (s *serverSession) shutdownContinuous() {
+	if s.burstTracker == nil {
+		return
+	}
+	s.stopSweepOne.Do(func() { close(s.stopSweep) })
+	s.recordBursts(s.burstTracker.ExpireAll())
 }
 
 func (s *serverSession) waitReady(ctx context.Context) bool {

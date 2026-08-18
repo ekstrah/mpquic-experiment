@@ -10,9 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
@@ -27,16 +31,24 @@ import (
 func main() {
 	serverAddr := flag.String("server", "", "server address, host:port (required)")
 	localAddrs := flag.String("local", "", "comma-separated local source IPs, one per path (default: one path, OS-chosen address)")
-	size := flag.Uint64("size", 10*1024*1024, "total payload size in bytes")
+	size := flag.Uint64("size", 10*1024*1024, "total payload size in bytes (ignored when -continuous is set)")
 	chunkSize := flag.Uint("chunk-size", 32*1024, "chunk size in bytes")
 	schedName := flag.String("scheduler", "roundrobin", fmt.Sprintf("scheduler to use (%s)", strings.Join(scheduler.Names(), ", ")))
 	ccList := flag.String("cc", "cubic", fmt.Sprintf("comma-separated congestion control per path, or one value for all paths (%s)", strings.Join(ccmodules.Names(), ", ")))
 	outPrefix := flag.String("out", "client-results", "output file prefix for -results.json / -results.csv")
 	progressEvery := flag.Duration("progress-interval", time.Second, "console progress print interval")
+	continuous := flag.Bool("continuous", false, "stream continuously as variable-size bursts instead of one fixed -size transfer")
+	duration := flag.Duration("duration", 0, "-continuous mode: how long to keep streaming (0 = until Ctrl+C)")
+	burstMinSize := flag.Uint64("burst-min-size", 4*1024, "-continuous mode: minimum burst size in bytes")
+	burstMaxSize := flag.Uint64("burst-max-size", 1024*1024, "-continuous mode: maximum burst size in bytes")
+	burstInterval := flag.Duration("burst-interval", time.Second, "-continuous mode: time between bursts")
 	flag.Parse()
 
 	if *serverAddr == "" {
 		log.Fatal("client: -server is required")
+	}
+	if *continuous && (*burstMinSize == 0 || *burstMaxSize < *burstMinSize) {
+		log.Fatal("client: -continuous requires -burst-max-size >= -burst-min-size > 0")
 	}
 
 	locals := parseLocals(*localAddrs)
@@ -51,17 +63,15 @@ func main() {
 		log.Fatalf("client: %v", err)
 	}
 
-	log.Printf("client: generating %d byte random payload", *size)
-	payload, err := transfer.GenerateRandomPayload(*size)
-	if err != nil {
-		log.Fatalf("client: %v", err)
+	totalSize := *size
+	if *continuous {
+		totalSize = 0 // 0 tells the server this is a continuous session (see ControlHeader doc)
 	}
-	chunks := transfer.Split(payload, uint32(*chunkSize))
 
 	sessID := transfer.NewSessionID()
 	ctrl := transfer.ControlHeader{
 		SessionID: sessID,
-		TotalSize: *size,
+		TotalSize: totalSize,
 		ChunkSize: uint32(*chunkSize),
 		NumPaths:  uint32(numPaths),
 		Scheduler: *schedName,
@@ -93,7 +103,6 @@ func main() {
 		}
 	}
 
-	progress := metrics.NewProgressPrinter(*size, *progressEvery)
 	sched := schedFactory()
 	start := time.Now()
 
@@ -109,24 +118,136 @@ func main() {
 		}(pc)
 	}
 
-	sendChunks(chunks, paths, sched, progress)
-	progress.Close()
+	if *continuous {
+		runContinuous(continuousConfig{
+			paths: paths, sched: sched, start: start, sessIDStr: sessIDStr,
+			minSize: *burstMinSize, maxSize: *burstMaxSize, interval: *burstInterval,
+			duration: *duration, chunkSize: uint32(*chunkSize), outPrefix: *outPrefix,
+		})
+	} else {
+		log.Printf("client: generating %d byte random payload", *size)
+		payload, err := transfer.GenerateRandomPayload(*size)
+		if err != nil {
+			log.Fatalf("client: %v", err)
+		}
+		chunks := transfer.Split(payload, uint32(*chunkSize), 0, *size)
+		progress := metrics.NewProgressPrinter(*size, *progressEvery)
+		sendChunks(chunks, paths, sched, progress)
+		progress.Close()
+	}
+
 	stopRTT()
 	rttWG.Wait()
 
 	drainPaths(paths)
 
-	result := buildResult(sessID, ctrl, paths, start)
-	result.Print()
-	if err := result.WriteJSON(*outPrefix + "-results.json"); err != nil {
-		log.Printf("client: write json: %v", err)
-	}
-	if err := result.WriteCSV(*outPrefix + "-results.csv"); err != nil {
-		log.Printf("client: write csv: %v", err)
+	if !*continuous {
+		result := buildResult(sessID, ctrl, paths, start)
+		result.Print()
+		if err := result.WriteJSON(*outPrefix + "-results.json"); err != nil {
+			log.Printf("client: write json: %v", err)
+		}
+		if err := result.WriteCSV(*outPrefix + "-results.csv"); err != nil {
+			log.Printf("client: write csv: %v", err)
+		}
 	}
 	if err := metrics.WriteRTTSamplesCSV(*outPrefix+"-client-rtt.csv", rttLog.Snapshot()); err != nil {
 		log.Printf("client: write rtt csv: %v", err)
 	}
+}
+
+// continuousConfig bundles runContinuous's parameters -- enough of them
+// that a plain argument list would be unwieldy and error-prone to call.
+type continuousConfig struct {
+	paths            []*pathConn
+	sched            scheduler.Scheduler
+	start            time.Time
+	sessIDStr        string
+	minSize, maxSize uint64
+	interval         time.Duration
+	duration         time.Duration
+	chunkSize        uint32
+	outPrefix        string
+}
+
+// runContinuous sends one burst immediately, then one every cfg.interval,
+// each a random size in [minSize,maxSize], until cfg.duration elapses (0 =
+// never) or the process receives SIGINT/SIGTERM. Reuses sendChunks/
+// scheduler/drainPaths exactly as the one-shot path does -- a burst is just
+// "one more batch of chunks" to that machinery, nothing about it is
+// continuous-mode-specific.
+func runContinuous(cfg continuousConfig) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	ctx := context.Background()
+	if cfg.duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.duration)
+		defer cancel()
+	}
+
+	var burstLog metrics.SampleLog[metrics.BurstSample]
+	var burstID uint64
+
+	sendBurst := func() {
+		burstID++
+		size := cfg.minSize
+		if cfg.maxSize > cfg.minSize {
+			size += uint64(rand.Int63n(int64(cfg.maxSize - cfg.minSize + 1)))
+		}
+		data, err := transfer.GenerateRandomPayload(size)
+		if err != nil {
+			log.Printf("client: burst %d: %v", burstID, err)
+			return
+		}
+		chunks := transfer.Split(data, cfg.chunkSize, burstID, size)
+
+		before, beforeChunks := snapshotSent(cfg.paths)
+		startMs := time.Since(cfg.start).Milliseconds()
+		sendChunks(chunks, cfg.paths, cfg.sched, nil)
+		after, afterChunks := snapshotSent(cfg.paths)
+
+		sent := after - before
+		log.Printf("client: burst %d: sent %d/%d bytes (%d chunks)", burstID, sent, size, afterChunks-beforeChunks)
+		burstLog.Add(metrics.BurstSample{
+			SessionID: cfg.sessIDStr, Role: "client", BurstID: burstID,
+			BytesExpected: size, BytesReceived: sent,
+			Chunks: afterChunks - beforeChunks, Complete: sent == size,
+			StartMs: startMs, EndMs: time.Since(cfg.start).Milliseconds(),
+		})
+		if err := metrics.WriteBurstSamplesCSV(cfg.outPrefix+"-bursts.csv", burstLog.Snapshot()); err != nil {
+			log.Printf("client: write bursts csv: %v", err)
+		}
+	}
+
+	sendBurst()
+	ticker := time.NewTicker(cfg.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sigCh:
+			log.Printf("client: received interrupt, stopping burst generation")
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sendBurst()
+		}
+	}
+}
+
+// snapshotSent totals bytes/chunks successfully written so far across every
+// path, so runContinuous can compute one burst's delta.
+func snapshotSent(paths []*pathConn) (bytes uint64, chunks int) {
+	for _, pc := range paths {
+		pc.mu.Lock()
+		bytes += pc.bytesSent
+		chunks += pc.chunksSent
+		pc.mu.Unlock()
+	}
+	return bytes, chunks
 }
 
 // drainTimeout bounds how long drainPath waits for the server's delivery
@@ -254,7 +375,9 @@ func sendChunks(chunks []transfer.Chunk, paths []*pathConn, sched scheduler.Sche
 				pc.mu.Unlock()
 				sentMu.Lock()
 				sent += uint64(len(c.Data))
-				progress.Update(sent)
+				if progress != nil {
+					progress.Update(sent)
+				}
 				sentMu.Unlock()
 			}
 		}(pc, queues[i])

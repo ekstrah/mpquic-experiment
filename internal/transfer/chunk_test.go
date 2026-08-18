@@ -10,7 +10,7 @@ func TestSplitAndReassemble(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateRandomPayload: %v", err)
 	}
-	chunks := Split(payload, 4096)
+	chunks := Split(payload, 4096, 0, uint64(len(payload)))
 
 	r := NewReassembler(uint64(len(payload)), 4096)
 	for _, c := range chunks {
@@ -32,7 +32,7 @@ func TestReassemblerOutOfOrderAndDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateRandomPayload: %v", err)
 	}
-	chunks := Split(payload, 1000)
+	chunks := Split(payload, 1000, 0, uint64(len(payload)))
 
 	r := NewReassembler(uint64(len(payload)), 1000)
 	// reverse order, plus a duplicate of the first chunk written
@@ -53,7 +53,7 @@ func TestReassemblerOutOfOrderAndDuplicate(t *testing.T) {
 }
 
 func TestChunkWireRoundTrip(t *testing.T) {
-	c := Chunk{Seq: 7, Offset: 12345, Data: []byte("hello world")}
+	c := Chunk{Seq: 7, Offset: 12345, BurstID: 42, BurstBytes: 999000, Data: []byte("hello world")}
 	var buf bytes.Buffer
 	if err := WriteChunk(&buf, c); err != nil {
 		t.Fatalf("WriteChunk: %v", err)
@@ -62,7 +62,7 @@ func TestChunkWireRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadChunk: %v", err)
 	}
-	if got.Seq != c.Seq || got.Offset != c.Offset || !bytes.Equal(got.Data, c.Data) {
+	if got.Seq != c.Seq || got.Offset != c.Offset || got.BurstID != c.BurstID || got.BurstBytes != c.BurstBytes || !bytes.Equal(got.Data, c.Data) {
 		t.Fatalf("round-tripped chunk = %+v, want %+v", got, c)
 	}
 	if !got.VerifyChecksum() {

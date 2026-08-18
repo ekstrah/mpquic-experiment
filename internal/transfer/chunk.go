@@ -18,16 +18,26 @@ func GenerateRandomPayload(size uint64) ([]byte, error) {
 	return data, nil
 }
 
-// Chunk is one piece of the payload, addressed by its byte offset so the
-// receiver can place it correctly regardless of arrival order across paths.
-// Checksum is a CRC32 of Data, verified independently per chunk -- there is
-// no whole-transfer hash, so chunks don't need a known total size or a
-// uniform size, and verification never has to wait for a "last" chunk.
+// Chunk is one piece of a burst, addressed by its byte offset (relative to
+// the start of that burst) so the receiver can place it correctly
+// regardless of arrival order across paths. Checksum is a CRC32 of Data,
+// verified independently per chunk -- there is no whole-transfer hash, so
+// chunks don't need a known total size or a uniform size, and verification
+// never has to wait for a "last" chunk.
+//
+// BurstID/BurstBytes identify which burst this chunk belongs to and that
+// burst's total size; they're repeated on every chunk of a burst (a few
+// redundant bytes per chunk) so the receiver learns a burst's size from its
+// very first chunk, with no separate frame type needed on the wire. A
+// one-shot (-size) transfer is just a single burst covering the whole
+// session, BurstID 0.
 type Chunk struct {
-	Seq      uint64
-	Offset   uint64
-	Checksum uint32
-	Data     []byte
+	Seq        uint64
+	Offset     uint64
+	BurstID    uint64
+	BurstBytes uint64
+	Checksum   uint32
+	Data       []byte
 }
 
 // VerifyChecksum reports whether Data still matches Checksum.
@@ -36,8 +46,9 @@ func (c Chunk) VerifyChecksum() bool {
 }
 
 // Split slices data into chunkSize-sized chunks (the last one may be
-// smaller).
-func Split(data []byte, chunkSize uint32) []Chunk {
+// smaller), all tagged as belonging to burst burstID of size burstBytes
+// (typically len(data)).
+func Split(data []byte, chunkSize uint32, burstID, burstBytes uint64) []Chunk {
 	if chunkSize == 0 {
 		chunkSize = uint32(len(data))
 	}
@@ -48,7 +59,11 @@ func Split(data []byte, chunkSize uint32) []Chunk {
 		if end > len(data) {
 			end = len(data)
 		}
-		chunks = append(chunks, Chunk{Seq: seq, Offset: uint64(offset), Data: data[offset:end]})
+		chunks = append(chunks, Chunk{
+			Seq: seq, Offset: uint64(offset),
+			BurstID: burstID, BurstBytes: burstBytes,
+			Data: data[offset:end],
+		})
 		seq++
 	}
 	return chunks
@@ -61,6 +76,12 @@ func WriteChunk(w io.Writer, c Chunk) error {
 		return err
 	}
 	if err := binary.Write(w, binary.BigEndian, c.Offset); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, c.BurstID); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, c.BurstBytes); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.BigEndian, uint32(len(c.Data))); err != nil {
@@ -83,6 +104,12 @@ func ReadChunk(r io.Reader) (Chunk, error) {
 		return c, err
 	}
 	if err := binary.Read(r, binary.BigEndian, &c.Offset); err != nil {
+		return c, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &c.BurstID); err != nil {
+		return c, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &c.BurstBytes); err != nil {
 		return c, err
 	}
 	var n uint32

@@ -129,6 +129,23 @@ type DeliverySample struct {
 	Bytes     int
 }
 
+// BurstSample is one burst's outcome in a continuous session, appended as
+// each burst completes or times out incomplete -- a continuous session has
+// no single "end" to write one final result at, so bursts are reported
+// incrementally instead, same as RTTSample/DeliverySample already are.
+type BurstSample struct {
+	SessionID     string
+	Role          string // "client" or "server"
+	BurstID       uint64
+	BytesExpected uint64
+	BytesReceived uint64
+	Chunks        int
+	Corrupted     int
+	Complete      bool
+	StartMs       int64
+	EndMs         int64
+}
+
 // SampleLog is a concurrency-safe append-only collector for samples
 // gathered from multiple per-path goroutines over the life of a transfer.
 type SampleLog[T any] struct {
@@ -189,6 +206,38 @@ func WriteDeliverySamplesCSV(path string, samples []DeliverySample) error {
 		row := []string{
 			s.SessionID, strconv.Itoa(s.PathIndex), strconv.FormatUint(s.Seq, 10),
 			strconv.FormatInt(s.TMs, 10), strconv.Itoa(s.Bytes),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteBurstSamplesCSV writes the accumulated per-burst outcomes for a
+// continuous session. Unlike WriteJSON/WriteCSV (one shot, written once at
+// the end of a one-shot transfer) this is meant to be called repeatedly as
+// a continuous session progresses -- each call overwrites path with the
+// full snapshot so far, which is simplest and fine at the sample volumes
+// (one row per burst, not per chunk) this is used at.
+func WriteBurstSamplesCSV(path string, samples []BurstSample) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	header := []string{"session_id", "role", "burst_id", "bytes_expected", "bytes_received", "chunks", "chunks_corrupted", "complete", "start_ms", "end_ms"}
+	if err := w.Write(header); err != nil {
+		return err
+	}
+	for _, s := range samples {
+		row := []string{
+			s.SessionID, s.Role, strconv.FormatUint(s.BurstID, 10),
+			strconv.FormatUint(s.BytesExpected, 10), strconv.FormatUint(s.BytesReceived, 10),
+			strconv.Itoa(s.Chunks), strconv.Itoa(s.Corrupted), strconv.FormatBool(s.Complete),
+			strconv.FormatInt(s.StartMs, 10), strconv.FormatInt(s.EndMs, 10),
 		}
 		if err := w.Write(row); err != nil {
 			return err
