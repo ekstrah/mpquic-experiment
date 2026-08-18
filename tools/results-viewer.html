@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MPQUIC Results Viewer</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --surface-2:      #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --good:           #0ca30c;
+    --good-text:      #006300;
+    --critical:       #d03b3b;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --surface-2:      #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --good:           #0ca30c;
+      --good-text:      #0ca30c;
+      --critical:       #e66767;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+      --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --surface-2:      #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --good:           #0ca30c;
+    --good-text:      #0ca30c;
+    --critical:       #e66767;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+  }
+
+  .viz-root {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh;
+    padding: 24px 20px 64px;
+    box-sizing: border-box;
+  }
+  .viz-root * { box-sizing: border-box; }
+  .page { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; line-height: 1.5; }
+  code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+
+  .dropzone {
+    border: 1.5px dashed var(--baseline);
+    border-radius: 10px;
+    background: var(--surface-1);
+    padding: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .dropzone.drag { border-color: var(--series-1); background: color-mix(in srgb, var(--series-1) 6%, var(--surface-1)); }
+  .dropzone-text { font-size: 13px; color: var(--text-secondary); }
+  .dropzone-text b { color: var(--text-primary); }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 13px; font-weight: 550; cursor: pointer;
+    border-radius: 7px; padding: 9px 14px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-primary);
+  }
+  button.primary { background: var(--series-1); border-color: transparent; color: #fff; }
+  button.ghost { background: transparent; }
+  button:hover { filter: brightness(0.97); }
+  :root:not([data-theme="light"]) .viz-root button:hover,
+  :root[data-theme="dark"] .viz-root button:hover { filter: brightness(1.15); }
+  input[type=file] { display: none; }
+
+  .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); font-size: 13px; }
+
+  .run-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px 22px;
+    margin-top: 20px;
+  }
+  .run-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .run-title { font-size: 14.5px; font-weight: 650; }
+  .run-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 3px 9px 3px 7px; border-radius: 999px; }
+  .pill-good { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good-text); }
+  .pill-critical { background: color-mix(in srgb, var(--critical) 14%, transparent); color: var(--critical); }
+  .pill-muted { background: var(--surface-2); color: var(--text-muted); }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .remove-btn { font-size: 12px; color: var(--text-muted); background: none; border: none; padding: 4px 6px; }
+  .remove-btn:hover { color: var(--critical); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; margin-bottom: 18px; }
+  .stat { background: var(--surface-1); padding: 12px 14px; }
+  .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+  .stat-value { font-size: 18px; font-weight: 650; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 620px) { .charts { grid-template-columns: 1fr; } }
+  .chart-title { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; }
+  .chart-wrap { position: relative; overflow-x: auto; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-muted); }
+  .col { transition: filter .1s; cursor: pointer; }
+  .col:hover, .col:focus { filter: brightness(1.12); outline: none; }
+  .collabel { fill: var(--text-primary); font-size: 11px; font-weight: 600; }
+  .axislabel { font-size: 10.5px; }
+  .ytick { font-size: 10px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-secondary); }
+  .legend-swatch { width: 9px; height: 9px; border-radius: 2.5px; flex: none; }
+
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 50;
+    background: var(--text-primary); color: var(--surface-1);
+    border-radius: 7px; padding: 7px 10px; font-size: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    transform: translate(-50%, -100%); margin-top: -10px;
+    white-space: nowrap; opacity: 0; transition: opacity .08s;
+  }
+  .tooltip.show { opacity: 1; }
+  .tooltip .ttval { font-weight: 700; }
+  .tooltip .ttrow { display: flex; align-items: center; gap: 6px; }
+  .tooltip .ttrow + .ttrow { margin-top: 3px; }
+  .tooltip .ttkey { width: 10px; height: 2px; border-radius: 1px; flex: none; }
+  .tooltip .ttlabel { opacity: 0.75; margin-left: auto; padding-left: 10px; }
+
+  details.tv { margin-top: 16px; }
+  summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); font-weight: 550; }
+  table.rawtable { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  table.rawtable th, table.rawtable td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  table.rawtable th { color: var(--text-muted); font-weight: 600; font-size: 11px; }
+
+  .compare-title { font-size: 15px; font-weight: 650; margin: 32px 0 4px; }
+  .compare-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <div class="page">
+    <h1>MPQUIC results viewer</h1>
+    <p class="sub">Load one or more <code>*-results.csv</code> files written by <code>cmd/client</code> or <code>cmd/server</code> (the <code>-out</code> flag prefix). Nothing leaves your browser — parsing happens locally.</p>
+
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone-text">Drag CSV files here, or <b>choose files</b> to add a run.</div>
+      <div class="btnrow">
+        <button class="primary" id="pickBtn">Choose CSV files</button>
+        <button class="ghost" id="sampleBtn">Load sample data</button>
+        <button class="ghost" id="clearBtn">Clear all</button>
+      </div>
+      <input type="file" id="fileInput" accept=".csv,text/csv" multiple>
+    </div>
+
+    <div id="content"></div>
+  </div>
+  <div class="tooltip" id="tooltip"></div>
+</div>
+
+<script>
+(function () {
+  const root = document.querySelector('.viz-root');
+  const cs = getComputedStyle(root);
+  const SLOTS = [1,2,3,4,5,6,7,8].map(n => cs.getPropertyValue('--series-' + n).trim());
+  const tooltip = document.getElementById('tooltip');
+  const content = document.getElementById('content');
+
+  // session_id -> { role, scheduler, totalBytes, durationMs, integrityOk, sourceFile, paths: [ {index,local,remote,bytes,chunks,durationMs,cc} ] }
+  const runs = new Map();
+
+  function parseCSV(text) {
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i+1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+        } else field += c;
+      } else if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i+1] === '\n') i++;
+        row.push(field); field = '';
+        if (row.length > 1 || row[0] !== '') rows.push(row);
+        row = [];
+      } else field += c;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  function ingest(text, filename) {
+    const rows = parseCSV(text);
+    if (!rows.length) return;
+    const header = rows[0].map(h => h.trim());
+    const idx = name => header.indexOf(name);
+    const iSession = idx('session_id'), iRole = idx('role'), iPath = idx('path_index'),
+          iLocal = idx('local_addr'), iRemote = idx('remote_addr'), iBytes = idx('bytes'),
+          iChunks = idx('chunks'), iDur = idx('duration_ms'), iCC = idx('congestion_control'),
+          iSched = idx('scheduler'), iOk = idx('integrity_ok');
+    if (iSession < 0 || iBytes < 0 || iDur < 0) return;
+
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (row.length < 2) continue;
+      const sid = row[iSession];
+      if (!sid) continue;
+      const pathIndex = parseInt(row[iPath], 10);
+      let run = runs.get(sid);
+      if (!run) {
+        run = { role: row[iRole] || '', scheduler: '', totalBytes: 0, durationMs: 0, integrityOk: false, sourceFile: filename, paths: [] };
+        runs.set(sid, run);
+      }
+      if (pathIndex === -1) {
+        run.totalBytes = parseInt(row[iBytes], 10) || 0;
+        run.durationMs = parseInt(row[iDur], 10) || 0;
+        run.scheduler = row[iSched] || run.scheduler;
+        run.integrityOk = (row[iOk] || '').trim() === 'true';
+      } else {
+        run.paths.push({
+          index: pathIndex,
+          local: row[iLocal] || '',
+          remote: row[iRemote] || '',
+          bytes: parseInt(row[iBytes], 10) || 0,
+          chunks: parseInt(row[iChunks], 10) || 0,
+          durationMs: parseInt(row[iDur], 10) || 0,
+          cc: row[iCC] || '',
+        });
+        run.scheduler = run.scheduler || row[iSched] || '';
+      }
+    }
+  }
+
+  function mbps(bytes, ms) {
+    if (!ms) return 0;
+    return (bytes * 8) / (ms / 1000) / 1e6;
+  }
+  function fmtBytes(b) {
+    if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+    if (b >= 1e6) return (b / 1e6).toFixed(2) + ' MB';
+    if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
+    return b + ' B';
+  }
+  function fmtMs(ms) {
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + ' s';
+    return ms + ' ms';
+  }
+  function niceStep(max) {
+    if (max <= 0) return 1;
+    const rough = max / 4;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    const step = (norm >= 5 ? 5 : norm >= 2 ? 2 : 1) * mag;
+    return step;
+  }
+
+  function showTooltip(x, y, rowsHtml) {
+    tooltip.innerHTML = '';
+    rowsHtml.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'ttrow';
+      const key = document.createElement('div');
+      key.className = 'ttkey';
+      key.style.background = r.color;
+      const val = document.createElement('span');
+      val.className = 'ttval';
+      val.textContent = r.value;
+      const lab = document.createElement('span');
+      lab.className = 'ttlabel';
+      lab.textContent = r.label;
+      div.appendChild(key); div.appendChild(val); div.appendChild(lab);
+      tooltip.appendChild(div);
+    });
+    tooltip.style.left = x + 'px';
+    tooltip.style.top = y + 'px';
+    tooltip.classList.add('show');
+  }
+  function hideTooltip() { tooltip.classList.remove('show'); }
+
+  // Renders a simple column (vertical bar) chart into an SVG.
+  function renderColumnChart(container, items, opts) {
+    // items: [{label, value, color, sub}]
+    const width = Math.max(280, container.clientWidth || 280);
+    const height = 200;
+    const padL = 40, padR = 12, padT = 14, padB = 34;
+    const plotW = width - padL - padR, plotH = height - padT - padB;
+    const maxVal = Math.max(1, ...items.map(d => d.value));
+    const step = niceStep(maxVal);
+    const niceMax = Math.ceil(maxVal / step) * step || step;
+    const n = items.length;
+    const gap = 2;
+    const bandW = plotW / n;
+    const barW = Math.min(24, bandW - 14);
+
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', height);
+
+    // gridlines + y ticks
+    const gridCount = 4;
+    for (let g = 0; g <= gridCount; g++) {
+      const v = (niceMax / gridCount) * g;
+      const y = padT + plotH - (v / niceMax) * plotH;
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', padL); line.setAttribute('x2', width - padR);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      line.setAttribute('stroke', 'var(--grid)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+      const t = document.createElementNS(svgNS, 'text');
+      t.setAttribute('x', padL - 8); t.setAttribute('y', y + 3);
+      t.setAttribute('text-anchor', 'end');
+      t.setAttribute('class', 'ytick');
+      t.textContent = opts.yTickFmt(v);
+      svg.appendChild(t);
+    }
+    // baseline
+    const base = document.createElementNS(svgNS, 'line');
+    base.setAttribute('x1', padL); base.setAttribute('x2', width - padR);
+    base.setAttribute('y1', padT + plotH); base.setAttribute('y2', padT + plotH);
+    base.setAttribute('stroke', 'var(--baseline)');
+    base.setAttribute('stroke-width', '1');
+    svg.appendChild(base);
+
+    items.forEach((d, i) => {
+      const cx = padL + bandW * i + bandW / 2;
+      const barH = niceMax > 0 ? (d.value / niceMax) * plotH : 0;
+      const y = padT + plotH - barH;
+      const x = cx - barW / 2;
+
+      const rect = document.createElementNS(svgNS, 'path');
+      const r = 4;
+      const h = Math.max(barH, 0.5);
+      const w = barW;
+      const top = Math.min(r, h);
+      const dPath = `M ${x} ${y + h} L ${x} ${y + top} Q ${x} ${y} ${x + top} ${y} L ${x + w - top} ${y} Q ${x + w} ${y} ${x + w} ${y + top} L ${x + w} ${y + h} Z`;
+      rect.setAttribute('d', dPath);
+      rect.setAttribute('fill', d.color);
+      rect.setAttribute('class', 'col');
+      rect.setAttribute('tabindex', '0');
+      svg.appendChild(rect);
+
+      // direct label at cap, if it fits
+      const label = opts.valueFmt(d.value);
+      const approxWidth = label.length * 6.2;
+      if (approxWidth < bandW - 4 && h > 16) {
+        const t = document.createElementNS(svgNS, 'text');
+        t.setAttribute('x', cx); t.setAttribute('y', y - 6);
+        t.setAttribute('text-anchor', 'middle');
+        t.setAttribute('class', 'collabel');
+        t.textContent = label;
+        svg.appendChild(t);
+      }
+
+      // x axis label
+      const xt = document.createElementNS(svgNS, 'text');
+      xt.setAttribute('x', cx); xt.setAttribute('y', padT + plotH + 16);
+      xt.setAttribute('text-anchor', 'middle');
+      xt.setAttribute('class', 'axislabel');
+      xt.textContent = d.label;
+      svg.appendChild(xt);
+
+      const hit = rect;
+      const showTT = (evt) => {
+        showTooltip(evt.clientX, evt.clientY, [{ color: d.color, value: opts.valueFmt(d.value), label: d.sub || d.label }]);
+      };
+      hit.addEventListener('pointermove', showTT);
+      hit.addEventListener('pointerenter', showTT);
+      hit.addEventListener('pointerleave', hideTooltip);
+      hit.addEventListener('focus', () => showTooltip(x + width * 0.3, y, [{ color: d.color, value: opts.valueFmt(d.value), label: d.sub || d.label }]));
+      hit.addEventListener('blur', hideTooltip);
+    });
+
+    container.innerHTML = '';
+    container.appendChild(svg);
+  }
+
+  function pathColor(pathIndex) { return SLOTS[pathIndex % SLOTS.length]; }
+
+  function renderRun(sid, run, cardEl) {
+    const paths = run.paths.slice().sort((a, b) => a.index - b.index);
+    const throughput = mbps(run.totalBytes, run.durationMs);
+
+    const head = document.createElement('div');
+    head.className = 'run-head';
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'run-title';
+    title.textContent = (run.role || 'run') + ' · scheduler=' + (run.scheduler || 'n/a') + ' · ' + paths.length + ' path' + (paths.length === 1 ? '' : 's');
+    const meta = document.createElement('div');
+    meta.className = 'run-meta';
+    meta.textContent = 'session ' + sid.slice(0, 12) + (sid.length > 12 ? '…' : '') + '  ·  from ' + run.sourceFile;
+    titleWrap.appendChild(title); titleWrap.appendChild(meta);
+
+    const pill = document.createElement('span');
+    if (run.role === 'client') {
+      pill.className = 'pill pill-muted';
+      pill.innerHTML = '<span class="dot"></span>';
+      pill.appendChild(document.createTextNode('integrity n/a (check server side)'));
+    } else if (run.integrityOk) {
+      pill.className = 'pill pill-good';
+      pill.innerHTML = '<span class="dot"></span>';
+      pill.appendChild(document.createTextNode('integrity OK'));
+    } else {
+      pill.className = 'pill pill-critical';
+      pill.innerHTML = '<span class="dot"></span>';
+      pill.appendChild(document.createTextNode('integrity FAILED'));
+    }
+    head.appendChild(titleWrap);
+    head.appendChild(pill);
+    cardEl.appendChild(head);
+
+    const stats = document.createElement('div');
+    stats.className = 'stats';
+    const statDefs = [
+      ['Total bytes', fmtBytes(run.totalBytes)],
+      ['Duration', fmtMs(run.durationMs)],
+      ['Throughput', throughput.toFixed(1) + ' Mbps'],
+      ['Paths', String(paths.length)],
+    ];
+    statDefs.forEach(([label, value]) => {
+      const s = document.createElement('div');
+      s.className = 'stat';
+      const l = document.createElement('div'); l.className = 'stat-label'; l.textContent = label;
+      const v = document.createElement('div'); v.className = 'stat-value'; v.textContent = value;
+      s.appendChild(l); s.appendChild(v);
+      stats.appendChild(s);
+    });
+    cardEl.appendChild(stats);
+
+    const charts = document.createElement('div');
+    charts.className = 'charts';
+
+    const bytesCol = document.createElement('div');
+    const bytesTitle = document.createElement('div'); bytesTitle.className = 'chart-title'; bytesTitle.textContent = 'Bytes transferred by path';
+    const bytesWrap = document.createElement('div'); bytesWrap.className = 'chart-wrap';
+    bytesCol.appendChild(bytesTitle); bytesCol.appendChild(bytesWrap);
+
+    const thruCol = document.createElement('div');
+    const thruTitle = document.createElement('div'); thruTitle.className = 'chart-title'; thruTitle.textContent = 'Throughput by path (Mbps)';
+    const thruWrap = document.createElement('div'); thruWrap.className = 'chart-wrap';
+    thruCol.appendChild(thruTitle); thruCol.appendChild(thruWrap);
+
+    charts.appendChild(bytesCol); charts.appendChild(thruCol);
+    cardEl.appendChild(charts);
+
+    const items = paths.map(p => ({
+      label: 'P' + p.index,
+      sub: 'path ' + p.index + ' · ' + (p.cc || 'cc?'),
+      color: pathColor(p.index),
+      bytes: p.bytes,
+      mbps: mbps(p.bytes, p.durationMs),
+    }));
+
+    if (paths.length) {
+      renderColumnChart(bytesWrap, items.map(d => ({ label: d.label, sub: d.sub, color: d.color, value: d.bytes })), {
+        valueFmt: fmtBytes, yTickFmt: fmtBytes,
+      });
+      renderColumnChart(thruWrap, items.map(d => ({ label: d.label, sub: d.sub, color: d.color, value: d.mbps })), {
+        valueFmt: v => v.toFixed(1), yTickFmt: v => v.toFixed(0),
+      });
+    } else {
+      bytesWrap.innerHTML = '<div class="empty" style="padding:30px 0">no per-path rows</div>';
+      thruWrap.innerHTML = '<div class="empty" style="padding:30px 0">no per-path rows</div>';
+    }
+
+    if (paths.length > 1) {
+      const legend = document.createElement('div');
+      legend.className = 'legend';
+      paths.forEach(p => {
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        const sw = document.createElement('span'); sw.className = 'legend-swatch'; sw.style.background = pathColor(p.index);
+        item.appendChild(sw);
+        item.appendChild(document.createTextNode('Path ' + p.index + ' · ' + (p.cc || 'cc?')));
+        legend.appendChild(item);
+      });
+      cardEl.appendChild(legend);
+    }
+
+    const details = document.createElement('details');
+    details.className = 'tv';
+    const summary = document.createElement('summary'); summary.textContent = 'Table view';
+    details.appendChild(summary);
+    const table = document.createElement('table');
+    table.className = 'rawtable';
+    const thead = document.createElement('tr');
+    ['Path', 'Local addr', 'Remote addr', 'CC', 'Bytes', 'Chunks', 'Duration', 'Mbps'].forEach(h => {
+      const th = document.createElement('th'); th.textContent = h; thead.appendChild(th);
+    });
+    table.appendChild(thead);
+    paths.forEach(p => {
+      const tr = document.createElement('tr');
+      [p.index, p.local, p.remote, p.cc, fmtBytes(p.bytes), p.chunks, fmtMs(p.durationMs), mbps(p.bytes, p.durationMs).toFixed(1)].forEach(v => {
+        const td = document.createElement('td'); td.textContent = String(v); tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    details.appendChild(table);
+    cardEl.appendChild(details);
+  }
+
+  function renderComparison(container, sortedRuns) {
+    if (sortedRuns.length < 2) return;
+    const wrap = document.createElement('div');
+    const title = document.createElement('div'); title.className = 'compare-title'; title.textContent = 'Run comparison';
+    const sub = document.createElement('div'); sub.className = 'compare-sub'; sub.textContent = 'Aggregate throughput across all loaded runs.';
+    wrap.appendChild(title); wrap.appendChild(sub);
+
+    const card = document.createElement('div');
+    card.className = 'run-card';
+    const chartWrap = document.createElement('div'); chartWrap.className = 'chart-wrap';
+    card.appendChild(chartWrap);
+
+    const items = sortedRuns.map(([sid, run], i) => ({
+      label: (run.role === 'server' ? 'srv' : 'cli') + i,
+      sub: run.sourceFile + ' (' + run.scheduler + ')',
+      color: SLOTS[i % SLOTS.length],
+      value: mbps(run.totalBytes, run.durationMs),
+    }));
+    renderColumnChart(chartWrap, items, { valueFmt: v => v.toFixed(1), yTickFmt: v => v.toFixed(0) });
+
+    const legend = document.createElement('div');
+    legend.className = 'legend';
+    items.forEach(it => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      const sw = document.createElement('span'); sw.className = 'legend-swatch'; sw.style.background = it.color;
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(it.label + ' — ' + it.sub));
+      legend.appendChild(item);
+    });
+    card.appendChild(legend);
+    wrap.appendChild(card);
+    container.appendChild(wrap);
+  }
+
+  function renderAll() {
+    content.innerHTML = '';
+    if (runs.size === 0) {
+      content.innerHTML = '<div class="empty">No runs loaded yet. Add a <code>*-results.csv</code> file, or click "Load sample data" to preview.</div>';
+      return;
+    }
+    const sorted = Array.from(runs.entries());
+    sorted.forEach(([sid, run]) => {
+      const card = document.createElement('div');
+      card.className = 'run-card';
+      renderRun(sid, run, card);
+      content.appendChild(card);
+    });
+    renderComparison(content, sorted);
+  }
+
+  function loadFiles(fileList) {
+    const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.csv') || f.type === 'text/csv');
+    if (!files.length) return;
+    let pending = files.length;
+    files.forEach(f => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        ingest(String(reader.result), f.name);
+        pending--;
+        if (pending === 0) renderAll();
+      };
+      reader.readAsText(f);
+    });
+  }
+
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  document.getElementById('pickBtn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => loadFiles(e.target.files));
+  document.getElementById('clearBtn').addEventListener('click', () => { runs.clear(); renderAll(); });
+  ['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
+  dropzone.addEventListener('drop', e => loadFiles(e.dataTransfer.files));
+
+  document.getElementById('sampleBtn').addEventListener('click', () => {
+    const sampleServer = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
+a1b2c3d4e5f6,server,0,10.0.0.2:5000,10.0.0.1:51000,6291456,192,4180,cubic,roundrobin,true
+a1b2c3d4e5f6,server,1,10.0.1.2:5000,10.0.1.1:51000,4194304,128,4180,bbr,roundrobin,true
+a1b2c3d4e5f6,server,-1,,,10485760,,4180,,roundrobin,true`;
+    const sampleClient = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
+f6e5d4c3b2a1,client,0,192.168.9.39:0,10.0.0.1:5000,3145728,96,2650,cubic,weighted,false
+f6e5d4c3b2a1,client,1,192.168.9.40:0,10.0.1.1:5000,7340032,224,2650,bbr,weighted,false
+f6e5d4c3b2a1,client,-1,,,10485760,,2650,,weighted,false`;
+    ingest(sampleServer, 'sample-server-results.csv');
+    ingest(sampleClient, 'sample-client-results.csv');
+    renderAll();
+  });
+
+  renderAll();
+})();
+</script>
+</body>
+</html>
