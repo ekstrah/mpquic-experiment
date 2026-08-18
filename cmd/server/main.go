@@ -94,6 +94,13 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 		bytesReceived += uint64(len(chunk.Data))
 		sess.reassembler.Write(chunk)
 		sess.progress.Update(sess.reassembler.ReceivedBytes())
+		sess.deliveryLog.Add(metrics.DeliverySample{
+			SessionID: fmt.Sprintf("%x", sessID),
+			PathIndex: pathIndex,
+			Seq:       chunk.Seq,
+			TMs:       time.Since(sess.startTime).Milliseconds(),
+			Bytes:     len(chunk.Data),
+		})
 	}
 	log.Printf("server: session %x path %d done: %d bytes, smoothed_rtt=%s", sessID, pathIndex, bytesReceived, conn.ConnectionStats().SmoothedRTT)
 
@@ -141,6 +148,7 @@ type serverSession struct {
 	reassembler *transfer.Reassembler
 	progress    *metrics.ProgressPrinter
 	startTime   time.Time
+	deliveryLog metrics.SampleLog[metrics.DeliverySample]
 
 	wg          sync.WaitGroup
 	pathResults []metrics.PathStats
@@ -206,5 +214,8 @@ func (s *serverSession) finalize() {
 	}
 	if err := result.WriteCSV(s.outPrefix + "-results.csv"); err != nil {
 		log.Printf("server: write csv: %v", err)
+	}
+	if err := metrics.WriteDeliverySamplesCSV(s.outPrefix+"-server-delivery.csv", s.deliveryLog.Snapshot()); err != nil {
+		log.Printf("server: write delivery csv: %v", err)
 	}
 }

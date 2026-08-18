@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -102,6 +103,95 @@ func (r RunResult) Print() {
 		fmt.Printf("  path %d [%s -> %s] cc=%s: %d bytes, %d chunks, %s\n",
 			p.Index, p.LocalAddr, p.RemoteAddr, p.CC, p.Bytes, p.Chunks, p.Duration)
 	}
+}
+
+// RTTSample is one periodic RTT observation for a single path, taken from
+// the client side (RTT is measured from the sender's ACK-clocked view).
+type RTTSample struct {
+	SessionID     string
+	PathIndex     int
+	TMs           int64
+	LatestRTTMs   float64
+	SmoothedRTTMs float64
+}
+
+// DeliverySample is one chunk-delivery event: bytes arriving on a path,
+// taken from the server (receiver) side so it reflects actual goodput
+// rather than offered load.
+type DeliverySample struct {
+	SessionID string
+	PathIndex int
+	Seq       uint64
+	TMs       int64
+	Bytes     int
+}
+
+// SampleLog is a concurrency-safe append-only collector for samples
+// gathered from multiple per-path goroutines over the life of a transfer.
+type SampleLog[T any] struct {
+	mu   sync.Mutex
+	rows []T
+}
+
+func (l *SampleLog[T]) Add(v T) {
+	l.mu.Lock()
+	l.rows = append(l.rows, v)
+	l.mu.Unlock()
+}
+
+// Snapshot returns a copy of the samples collected so far.
+func (l *SampleLog[T]) Snapshot() []T {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]T, len(l.rows))
+	copy(out, l.rows)
+	return out
+}
+
+func WriteRTTSamplesCSV(path string, samples []RTTSample) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"session_id", "path_index", "t_ms", "latest_rtt_ms", "smoothed_rtt_ms"}); err != nil {
+		return err
+	}
+	for _, s := range samples {
+		row := []string{
+			s.SessionID, strconv.Itoa(s.PathIndex), strconv.FormatInt(s.TMs, 10),
+			strconv.FormatFloat(s.LatestRTTMs, 'f', 3, 64), strconv.FormatFloat(s.SmoothedRTTMs, 'f', 3, 64),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func WriteDeliverySamplesCSV(path string, samples []DeliverySample) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"session_id", "path_index", "seq", "t_ms", "bytes"}); err != nil {
+		return err
+	}
+	for _, s := range samples {
+		row := []string{
+			s.SessionID, strconv.Itoa(s.PathIndex), strconv.FormatUint(s.Seq, 10),
+			strconv.FormatInt(s.TMs, 10), strconv.Itoa(s.Bytes),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ProgressPrinter periodically prints bytes-so-far / total to stdout. Call

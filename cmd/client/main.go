@@ -96,8 +96,23 @@ func main() {
 	progress := metrics.NewProgressPrinter(*size, *progressEvery)
 	sched := schedFactory()
 	start := time.Now()
+
+	sessIDStr := fmt.Sprintf("%x", sessID)
+	rttLog := &metrics.SampleLog[metrics.RTTSample]{}
+	rttCtx, stopRTT := context.WithCancel(context.Background())
+	var rttWG sync.WaitGroup
+	for _, pc := range paths {
+		rttWG.Add(1)
+		go func(pc *pathConn) {
+			defer rttWG.Done()
+			sampleRTT(rttCtx, pc, start, sessIDStr, rttLog)
+		}(pc)
+	}
+
 	sendChunks(chunks, paths, sched, progress)
 	progress.Close()
+	stopRTT()
+	rttWG.Wait()
 
 	for _, pc := range paths {
 		pc.stream.Close()
@@ -110,6 +125,32 @@ func main() {
 	}
 	if err := result.WriteCSV(*outPrefix + "-results.csv"); err != nil {
 		log.Printf("client: write csv: %v", err)
+	}
+	if err := metrics.WriteRTTSamplesCSV(*outPrefix+"-client-rtt.csv", rttLog.Snapshot()); err != nil {
+		log.Printf("client: write rtt csv: %v", err)
+	}
+}
+
+// sampleRTT periodically records the path's RTT (as seen by the client's
+// QUIC stack) until ctx is cancelled. LatestRTT is the raw per-ACK sample;
+// SmoothedRTT is included alongside it for reference.
+func sampleRTT(ctx context.Context, pc *pathConn, start time.Time, sessIDStr string, rttLog *metrics.SampleLog[metrics.RTTSample]) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stats := pc.conn.ConnectionStats()
+			rttLog.Add(metrics.RTTSample{
+				SessionID:     sessIDStr,
+				PathIndex:     pc.index,
+				TMs:           time.Since(start).Milliseconds(),
+				LatestRTTMs:   float64(stats.LatestRTT.Microseconds()) / 1000,
+				SmoothedRTTMs: float64(stats.SmoothedRTT.Microseconds()) / 1000,
+			})
+		}
 	}
 }
 

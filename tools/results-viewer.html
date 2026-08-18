@@ -70,20 +70,27 @@
   .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; line-height: 1.5; }
   code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
 
+  .upload-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 560px) { .upload-row { grid-template-columns: 1fr; } }
+  .shared-actions { margin-top: 12px; }
+
   .dropzone {
     border: 1.5px dashed var(--baseline);
     border-radius: 10px;
     background: var(--surface-1);
-    padding: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
+    padding: 16px 18px;
   }
   .dropzone.drag { border-color: var(--series-1); background: color-mix(in srgb, var(--series-1) 6%, var(--surface-1)); }
-  .dropzone-text { font-size: 13px; color: var(--text-secondary); }
-  .dropzone-text b { color: var(--text-primary); }
+  .dz-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .dz-title { font-size: 13.5px; font-weight: 650; }
+  .dz-sub { font-size: 11px; color: var(--text-muted); }
+  .dz-body { font-size: 12.5px; color: var(--text-secondary); }
+  .dz-pick { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--series-1); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+  .file-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { display: flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 5px 4px 9px; font-size: 11.5px; color: var(--text-secondary); max-width: 100%; }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip button { flex: none; background: none; border: none; padding: 2px 4px; font-size: 13px; line-height: 1; color: var(--text-muted); cursor: pointer; }
+  .chip button:hover { color: var(--critical); }
   .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
   button {
     font: inherit; font-size: 13px; font-weight: 550; cursor: pointer;
@@ -166,16 +173,31 @@
 <div class="viz-root">
   <div class="page">
     <h1>MPQUIC results viewer</h1>
-    <p class="sub">Load one or more <code>*-results.csv</code> files written by <code>cmd/client</code> or <code>cmd/server</code> (the <code>-out</code> flag prefix). Load a client and a server CSV from the <b>same session</b> together and they're automatically paired into one client-vs-server comparison. Nothing leaves your browser — parsing happens locally.</p>
+    <p class="sub">Load the <code>-out</code> prefix's files written by <code>cmd/client</code> (<code>*-results.csv</code>, <code>*-client-rtt.csv</code>) and <code>cmd/server</code> (<code>*-results.csv</code>, <code>*-server-delivery.csv</code>). Load a client and a server CSV from the <b>same session</b> together and they're automatically paired, adding an RTT distribution and delivered-data timeline. Nothing leaves your browser — parsing happens locally.</p>
 
-    <div class="dropzone" id="dropzone">
-      <div class="dropzone-text">Drag CSV files here, or <b>choose files</b> to add a run.</div>
-      <div class="btnrow">
-        <button class="primary" id="pickBtn">Choose CSV files</button>
-        <button class="ghost" id="sampleBtn">Load sample data</button>
-        <button class="ghost" id="clearBtn">Clear all</button>
+    <div class="upload-row">
+      <div class="dropzone" id="dropzone-client" data-zone="client">
+        <div class="dz-header">
+          <span class="dz-title">Client results</span>
+          <span class="dz-sub">from <code>cmd/client -out</code></span>
+        </div>
+        <div class="dz-body">Drag CSV files here, or <button class="ghost dz-pick" data-zone="client">choose files</button></div>
+        <div class="file-chips" id="chips-client"></div>
+        <input type="file" id="fileInput-client" accept=".csv,text/csv" multiple>
       </div>
-      <input type="file" id="fileInput" accept=".csv,text/csv" multiple>
+      <div class="dropzone" id="dropzone-server" data-zone="server">
+        <div class="dz-header">
+          <span class="dz-title">Server results</span>
+          <span class="dz-sub">from <code>cmd/server -out</code></span>
+        </div>
+        <div class="dz-body">Drag CSV files here, or <button class="ghost dz-pick" data-zone="server">choose files</button></div>
+        <div class="file-chips" id="chips-server"></div>
+        <input type="file" id="fileInput-server" accept=".csv,text/csv" multiple>
+      </div>
+    </div>
+    <div class="btnrow shared-actions">
+      <button class="ghost" id="sampleBtn">Load sample data</button>
+      <button class="ghost" id="clearBtn">Clear all</button>
     </div>
 
     <div id="content"></div>
@@ -188,11 +210,16 @@
   const root = document.querySelector('.viz-root');
   const cs = getComputedStyle(root);
   const SLOTS = [1,2,3,4,5,6,7,8].map(n => cs.getPropertyValue('--series-' + n).trim());
+  const INK_COLOR = cs.getPropertyValue('--text-secondary').trim();
   const tooltip = document.getElementById('tooltip');
   const content = document.getElementById('content');
 
   // session_id -> { role, scheduler, totalBytes, durationMs, integrityOk, sourceFile, paths: [ {index,local,remote,bytes,chunks,durationMs,cc} ] }
   const runs = new Map();
+  // session_id -> [ {pathIndex, tMs, latestRttMs, smoothedRttMs} ]  (from *-client-rtt.csv)
+  const rttData = new Map();
+  // session_id -> [ {pathIndex, seq, tMs, bytes} ]  (from *-server-delivery.csv)
+  const deliveryData = new Map();
 
   function parseCSV(text) {
     const rows = [];
@@ -216,10 +243,57 @@
     return rows;
   }
 
+  // Dispatches a parsed CSV to the right store based on its header shape:
+  // summary results (*-results.csv), client RTT samples (*-client-rtt.csv),
+  // or server delivery events (*-server-delivery.csv).
   function ingest(text, filename) {
     const rows = parseCSV(text);
     if (!rows.length) return;
     const header = rows[0].map(h => h.trim());
+    if (header.includes('latest_rtt_ms')) ingestRTT(rows, header);
+    else if (header.includes('seq') && header.includes('bytes') && !header.includes('role')) ingestDelivery(rows, header);
+    else ingestResults(rows, header, filename);
+  }
+
+  function ingestRTT(rows, header) {
+    const idx = name => header.indexOf(name);
+    const iSession = idx('session_id'), iPath = idx('path_index'), iT = idx('t_ms'),
+          iLatest = idx('latest_rtt_ms'), iSmoothed = idx('smoothed_rtt_ms');
+    if (iSession < 0) return;
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const sid = row[iSession];
+      if (!sid) continue;
+      if (!rttData.has(sid)) rttData.set(sid, []);
+      rttData.get(sid).push({
+        pathIndex: parseInt(row[iPath], 10) || 0,
+        tMs: parseInt(row[iT], 10) || 0,
+        latestRttMs: parseFloat(row[iLatest]) || 0,
+        smoothedRttMs: parseFloat(row[iSmoothed]) || 0,
+      });
+    }
+  }
+
+  function ingestDelivery(rows, header) {
+    const idx = name => header.indexOf(name);
+    const iSession = idx('session_id'), iPath = idx('path_index'), iSeq = idx('seq'),
+          iT = idx('t_ms'), iBytes = idx('bytes');
+    if (iSession < 0) return;
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const sid = row[iSession];
+      if (!sid) continue;
+      if (!deliveryData.has(sid)) deliveryData.set(sid, []);
+      deliveryData.get(sid).push({
+        pathIndex: parseInt(row[iPath], 10) || 0,
+        seq: parseInt(row[iSeq], 10) || 0,
+        tMs: parseInt(row[iT], 10) || 0,
+        bytes: parseInt(row[iBytes], 10) || 0,
+      });
+    }
+  }
+
+  function ingestResults(rows, header, filename) {
     const idx = name => header.indexOf(name);
     const iSession = idx('session_id'), iRole = idx('role'), iPath = idx('path_index'),
           iLocal = idx('local_addr'), iRemote = idx('remote_addr'), iBytes = idx('bytes'),
@@ -493,7 +567,288 @@
     container.appendChild(svg);
   }
 
+  // Renders a multi-series line chart with a shared crosshair tooltip.
+  // series: [{name, color, points:[{x,y}], sub}], points sorted by x ascending.
+  function renderLineChart(container, series, opts) {
+    const width = Math.max(280, container.clientWidth || 280);
+    const height = 220;
+    const padL = 46, padR = 16, padT = 14, padB = 30;
+    const plotW = width - padL - padR, plotH = height - padT - padB;
+
+    const allPoints = series.flatMap(s => s.points);
+    if (!allPoints.length) { container.innerHTML = '<div class="empty" style="padding:30px 0">no data</div>'; return; }
+    const xMin = opts.xDomain ? opts.xDomain[0] : Math.min(...allPoints.map(p => p.x));
+    const xMax = opts.xDomain ? opts.xDomain[1] : Math.max(...allPoints.map(p => p.x));
+    const yMaxRaw = Math.max(1, ...allPoints.map(p => p.y));
+    const yStep = niceStep(yMaxRaw);
+    const yMax = Math.ceil(yMaxRaw / yStep) * yStep || yStep;
+    const xSpan = (xMax - xMin) || 1;
+
+    const xScale = x => padL + ((x - xMin) / xSpan) * plotW;
+    const yScale = y => padT + plotH - (y / yMax) * plotH;
+
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', height);
+
+    const gridCount = 4;
+    for (let g = 0; g <= gridCount; g++) {
+      const v = (yMax / gridCount) * g;
+      const y = yScale(v);
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', padL); line.setAttribute('x2', width - padR);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      line.setAttribute('stroke', 'var(--grid)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+      const t = document.createElementNS(svgNS, 'text');
+      t.setAttribute('x', padL - 8); t.setAttribute('y', y + 3);
+      t.setAttribute('text-anchor', 'end');
+      t.setAttribute('class', 'ytick');
+      t.textContent = opts.yTickFmt(v);
+      svg.appendChild(t);
+    }
+    const base = document.createElementNS(svgNS, 'line');
+    base.setAttribute('x1', padL); base.setAttribute('x2', width - padR);
+    base.setAttribute('y1', padT + plotH); base.setAttribute('y2', padT + plotH);
+    base.setAttribute('stroke', 'var(--baseline)');
+    base.setAttribute('stroke-width', '1');
+    svg.appendChild(base);
+
+    const xTickCount = 5;
+    for (let i = 0; i <= xTickCount; i++) {
+      const v = xMin + (xSpan * i) / xTickCount;
+      const t = document.createElementNS(svgNS, 'text');
+      t.setAttribute('x', xScale(v)); t.setAttribute('y', padT + plotH + 16);
+      t.setAttribute('text-anchor', i === 0 ? 'start' : i === xTickCount ? 'end' : 'middle');
+      t.setAttribute('class', 'axislabel');
+      t.textContent = opts.xTickFmt(v);
+      svg.appendChild(t);
+    }
+
+    series.forEach(s => {
+      if (!s.points.length) return;
+      const d = s.points.map((p, i) => (i === 0 ? 'M' : 'L') + xScale(p.x) + ' ' + yScale(p.y)).join(' ');
+      const path = document.createElementNS(svgNS, 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', s.color);
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('stroke-linejoin', 'round');
+      path.setAttribute('stroke-linecap', 'round');
+      svg.appendChild(path);
+
+      const last = s.points[s.points.length - 1];
+      const dot = document.createElementNS(svgNS, 'circle');
+      dot.setAttribute('cx', xScale(last.x)); dot.setAttribute('cy', yScale(last.y));
+      dot.setAttribute('r', '4');
+      dot.setAttribute('fill', s.color);
+      dot.setAttribute('stroke', 'var(--surface-1)');
+      dot.setAttribute('stroke-width', '2');
+      svg.appendChild(dot);
+    });
+
+    // Crosshair: an invisible hit layer over the plot area finds the nearest
+    // x per series and shows one tooltip listing every series' value there.
+    const hit = document.createElementNS(svgNS, 'rect');
+    hit.setAttribute('x', padL); hit.setAttribute('y', padT);
+    hit.setAttribute('width', Math.max(0, plotW)); hit.setAttribute('height', Math.max(0, plotH));
+    hit.setAttribute('fill', 'transparent');
+    hit.style.cursor = 'crosshair';
+    const crosshair = document.createElementNS(svgNS, 'line');
+    crosshair.setAttribute('y1', padT); crosshair.setAttribute('y2', padT + plotH);
+    crosshair.setAttribute('stroke', 'var(--baseline)');
+    crosshair.setAttribute('stroke-width', '1');
+    crosshair.style.display = 'none';
+    svg.appendChild(crosshair);
+    svg.appendChild(hit);
+
+    function nearest(points, dataX) {
+      let lo = 0, hi = points.length - 1;
+      if (dataX <= points[0].x) return points[0];
+      if (dataX >= points[hi].x) return points[hi];
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (points[mid].x < dataX) lo = mid + 1; else hi = mid;
+      }
+      const a = points[lo - 1], b = points[lo];
+      if (!a) return b;
+      return (dataX - a.x) < (b.x - dataX) ? a : b;
+    }
+
+    hit.addEventListener('pointermove', evt => {
+      const rect = svg.getBoundingClientRect();
+      const px = (evt.clientX - rect.left) * (width / rect.width);
+      const dataX = xMin + ((px - padL) / plotW) * xSpan;
+      crosshair.style.display = '';
+      crosshair.setAttribute('x1', px); crosshair.setAttribute('x2', px);
+      const rowsInfo = series.filter(s => s.points.length).map(s => {
+        const p = nearest(s.points, dataX);
+        return { color: s.color, value: opts.valueFmt(p.y), label: s.name };
+      });
+      showTooltip(evt.clientX, evt.clientY, rowsInfo);
+    });
+    hit.addEventListener('pointerleave', () => { crosshair.style.display = 'none'; hideTooltip(); });
+
+    container.innerHTML = '';
+    container.appendChild(svg);
+  }
+
   function pathColor(pathIndex) { return SLOTS[pathIndex % SLOTS.length]; }
+
+  // Builds one empirical-CDF step series per path from RTT samples.
+  function computeRTTCDF(samples) {
+    const byPath = new Map();
+    samples.forEach(s => {
+      if (!byPath.has(s.pathIndex)) byPath.set(s.pathIndex, []);
+      byPath.get(s.pathIndex).push(s.latestRttMs);
+    });
+    const series = [];
+    Array.from(byPath.keys()).sort((a, b) => a - b).forEach(pathIndex => {
+      const vals = byPath.get(pathIndex).slice().sort((a, b) => a - b);
+      const n = vals.length;
+      const points = [];
+      let prevPct = 0;
+      vals.forEach((v, i) => {
+        const pct = ((i + 1) / n) * 100;
+        points.push({ x: v, y: prevPct });
+        points.push({ x: v, y: pct });
+        prevPct = pct;
+      });
+      series.push({ name: 'Path ' + pathIndex, sub: n + ' samples', color: pathColor(pathIndex), points });
+    });
+    return series;
+  }
+
+  // Builds per-path + aggregate cumulative-bytes-over-time series, and the
+  // matching achieved-data-rate (1s bucket) series, from delivery events.
+  function computeDeliveryTimeSeries(samples) {
+    const byPath = new Map();
+    samples.forEach(s => {
+      if (!byPath.has(s.pathIndex)) byPath.set(s.pathIndex, []);
+      byPath.get(s.pathIndex).push(s);
+    });
+    const pathIndices = Array.from(byPath.keys()).sort((a, b) => a - b);
+    const maxTMs = Math.max(0, ...samples.map(s => s.tMs));
+    const maxBucket = Math.ceil(maxTMs / 1000);
+
+    const cumulative = [];
+    const rate = [];
+
+    pathIndices.forEach(pathIndex => {
+      const evs = byPath.get(pathIndex).slice().sort((a, b) => a.tMs - b.tMs);
+      let running = 0;
+      const cumPoints = evs.map(e => { running += e.bytes; return { x: e.tMs / 1000, y: running }; });
+      cumulative.push({ name: 'Path ' + pathIndex, color: pathColor(pathIndex), points: cumPoints });
+
+      const buckets = new Array(maxBucket + 1).fill(0);
+      evs.forEach(e => { buckets[Math.min(maxBucket, Math.floor(e.tMs / 1000))] += e.bytes; });
+      const ratePoints = buckets.map((b, i) => ({ x: i, y: (b * 8) / 1e6 }));
+      rate.push({ name: 'Path ' + pathIndex, color: pathColor(pathIndex), points: ratePoints });
+    });
+
+    // Aggregate "Total" series across all paths.
+    const allSorted = samples.slice().sort((a, b) => a.tMs - b.tMs);
+    let running = 0;
+    const totalCum = allSorted.map(e => { running += e.bytes; return { x: e.tMs / 1000, y: running }; });
+    cumulative.push({ name: 'Total', color: INK_COLOR, points: totalCum });
+
+    const totalBuckets = new Array(maxBucket + 1).fill(0);
+    samples.forEach(e => { totalBuckets[Math.min(maxBucket, Math.floor(e.tMs / 1000))] += e.bytes; });
+    const totalRate = totalBuckets.map((b, i) => ({ x: i, y: (b * 8) / 1e6 }));
+    rate.push({ name: 'Total', color: INK_COLOR, points: totalRate });
+
+    return { cumulative, rate };
+  }
+
+  function renderLegendFor(cardEl, seriesList) {
+    const legend = document.createElement('div');
+    legend.className = 'legend';
+    seriesList.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      const sw = document.createElement('span'); sw.className = 'legend-swatch'; sw.style.background = s.color;
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(s.name + (s.sub ? ' · ' + s.sub : '')));
+      legend.appendChild(item);
+    });
+    cardEl.appendChild(legend);
+  }
+
+  // Appends the RTT-CDF and/or delivery-timeline charts for a session, if
+  // the corresponding *-client-rtt.csv / *-server-delivery.csv were loaded.
+  function renderTimelineSections(sid, cardEl) {
+    const rtt = rttData.get(sid);
+    if (rtt && rtt.length) {
+      const title = document.createElement('div');
+      title.className = 'compare-title';
+      title.style.margin = '24px 0 4px';
+      title.style.fontSize = '13.5px';
+      title.textContent = 'RTT distribution';
+      cardEl.appendChild(title);
+      const sub = document.createElement('div');
+      sub.className = 'compare-sub';
+      sub.textContent = 'Empirical CDF of per-ACK RTT samples, by path.';
+      cardEl.appendChild(sub);
+      const wrap = document.createElement('div');
+      wrap.className = 'chart-wrap';
+      cardEl.appendChild(wrap);
+      const cdfSeries = computeRTTCDF(rtt);
+      renderLineChart(wrap, cdfSeries, {
+        xTickFmt: v => v.toFixed(1) + 'ms',
+        yTickFmt: v => v.toFixed(0) + '%',
+        valueFmt: v => v.toFixed(0) + '%',
+      });
+      renderLegendFor(cardEl, cdfSeries);
+    }
+
+    const delivery = deliveryData.get(sid);
+    if (delivery && delivery.length) {
+      const { cumulative, rate } = computeDeliveryTimeSeries(delivery);
+
+      const title1 = document.createElement('div');
+      title1.className = 'compare-title';
+      title1.style.margin = '24px 0 4px';
+      title1.style.fontSize = '13.5px';
+      title1.textContent = 'Cumulative delivered data';
+      cardEl.appendChild(title1);
+      const sub1 = document.createElement('div');
+      sub1.className = 'compare-sub';
+      sub1.textContent = 'Bytes received at the server over time, by path.';
+      cardEl.appendChild(sub1);
+      const wrap1 = document.createElement('div');
+      wrap1.className = 'chart-wrap';
+      cardEl.appendChild(wrap1);
+      renderLineChart(wrap1, cumulative, {
+        xTickFmt: v => v.toFixed(1) + 's',
+        yTickFmt: fmtBytes,
+        valueFmt: fmtBytes,
+      });
+      renderLegendFor(cardEl, cumulative);
+
+      const title2 = document.createElement('div');
+      title2.className = 'compare-title';
+      title2.style.margin = '24px 0 4px';
+      title2.style.fontSize = '13.5px';
+      title2.textContent = 'Achieved data rate';
+      cardEl.appendChild(title2);
+      const sub2 = document.createElement('div');
+      sub2.className = 'compare-sub';
+      sub2.textContent = 'Throughput per 1-second bucket, by path.';
+      cardEl.appendChild(sub2);
+      const wrap2 = document.createElement('div');
+      wrap2.className = 'chart-wrap';
+      cardEl.appendChild(wrap2);
+      renderLineChart(wrap2, rate, {
+        xTickFmt: v => v.toFixed(0) + 's',
+        yTickFmt: v => v.toFixed(0) + ' Mbps',
+        valueFmt: v => v.toFixed(1) + ' Mbps',
+      });
+      renderLegendFor(cardEl, rate);
+    }
+  }
 
   function renderRun(sid, run, cardEl) {
     const paths = run.paths.slice().sort((a, b) => a.index - b.index);
@@ -616,6 +971,7 @@
     });
     details.appendChild(table);
     cardEl.appendChild(details);
+    renderTimelineSections(sid, cardEl);
   }
 
   const CLIENT_COLOR = SLOTS[0];
@@ -741,6 +1097,7 @@
     });
     details.appendChild(rawTable);
     cardEl.appendChild(details);
+    renderTimelineSections(sid, cardEl);
   }
 
   function renderComparison(container, sortedRuns) {
@@ -812,29 +1169,75 @@
     renderComparison(content, reps);
   }
 
-  function loadFiles(fileList) {
+  // loadedFiles is the source of truth for what's on the page; `runs` is
+  // rebuilt from it on every add/remove so per-file removal is just "drop it
+  // from the list and re-parse everything that's left."
+  const loadedFiles = []; // {filename, text, zone}
+
+  function renderChips() {
+    ['client', 'server'].forEach(zone => {
+      const el = document.getElementById('chips-' + zone);
+      el.innerHTML = '';
+      loadedFiles.filter(f => f.zone === zone).forEach(f => {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        const name = document.createElement('span');
+        name.textContent = f.filename;
+        const rm = document.createElement('button');
+        rm.textContent = '×';
+        rm.setAttribute('aria-label', 'Remove ' + f.filename);
+        rm.addEventListener('click', () => {
+          const idx = loadedFiles.indexOf(f);
+          if (idx >= 0) loadedFiles.splice(idx, 1);
+          reingestAll();
+        });
+        chip.appendChild(name);
+        chip.appendChild(rm);
+        el.appendChild(chip);
+      });
+    });
+  }
+
+  function reingestAll() {
+    runs.clear();
+    rttData.clear();
+    deliveryData.clear();
+    loadedFiles.forEach(f => ingest(f.text, f.filename));
+    renderAll();
+    renderChips();
+  }
+
+  function addFiles(fileList, zone) {
     const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.csv') || f.type === 'text/csv');
     if (!files.length) return;
     let pending = files.length;
     files.forEach(f => {
       const reader = new FileReader();
       reader.onload = () => {
-        ingest(String(reader.result), f.name);
+        loadedFiles.push({ filename: f.name, text: String(reader.result), zone });
         pending--;
-        if (pending === 0) renderAll();
+        if (pending === 0) reingestAll();
       };
       reader.readAsText(f);
     });
   }
 
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('fileInput');
-  document.getElementById('pickBtn').addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', e => loadFiles(e.target.files));
-  document.getElementById('clearBtn').addEventListener('click', () => { runs.clear(); renderAll(); });
-  ['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
-  ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
-  dropzone.addEventListener('drop', e => loadFiles(e.dataTransfer.files));
+  ['client', 'server'].forEach(zone => {
+    const dropzone = document.getElementById('dropzone-' + zone);
+    const fileInput = document.getElementById('fileInput-' + zone);
+    fileInput.addEventListener('change', e => { addFiles(e.target.files, zone); fileInput.value = ''; });
+    ['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
+    ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
+    dropzone.addEventListener('drop', e => addFiles(e.dataTransfer.files, zone));
+  });
+  document.querySelectorAll('.dz-pick').forEach(btn => {
+    btn.addEventListener('click', () => document.getElementById('fileInput-' + btn.dataset.zone).click());
+  });
+
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    loadedFiles.length = 0;
+    reingestAll();
+  });
 
   document.getElementById('sampleBtn').addEventListener('click', () => {
     const sid = 'a1b2c3d4e5f6';
@@ -851,13 +1254,39 @@ ${sid},server,-1,,,10485760,,2680,,weighted,true`;
     const sampleClient2 = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
 ${sid2},client,0,192.168.9.39:0,10.0.0.1:5000,10485760,320,4400,cubic,roundrobin,false
 ${sid2},client,-1,,,10485760,,4400,,roundrobin,false`;
-    ingest(sampleClient, 'sample-client-results.csv');
-    ingest(sampleServer, 'sample-server-results.csv');
-    ingest(sampleClient2, 'sample2-client-results.csv');
-    renderAll();
+    loadedFiles.push({ filename: 'sample-client-results.csv', text: sampleClient, zone: 'client' });
+    loadedFiles.push({ filename: 'sample-server-results.csv', text: sampleServer, zone: 'server' });
+    loadedFiles.push({ filename: 'sample2-client-results.csv', text: sampleClient2, zone: 'client' });
+
+    // Synthesize a plausible RTT + delivery timeline for the paired session
+    // so the CDF / cumulative / rate charts have something to show.
+    const rttRows = ['session_id,path_index,t_ms,latest_rtt_ms,smoothed_rtt_ms'];
+    const baseRtt = [14, 32], jitter = [3, 7];
+    for (let p = 0; p < 2; p++) {
+      let smoothed = baseRtt[p];
+      for (let t = 0; t <= 2650; t += 20) {
+        const latest = baseRtt[p] + Math.sin(t / 130 + p) * jitter[p] + (Math.random() - 0.5) * jitter[p] * 0.6;
+        smoothed = smoothed * 0.85 + latest * 0.15;
+        rttRows.push(`${sid},${p},${t},${latest.toFixed(2)},${smoothed.toFixed(2)}`);
+      }
+    }
+    const deliveryRows = ['session_id,path_index,seq,t_ms,bytes'];
+    const chunkSize = 32768;
+    const pathChunks = [192, 128];
+    for (let p = 0; p < 2; p++) {
+      for (let seq = 0; seq < pathChunks[p]; seq++) {
+        const t = Math.round((seq / pathChunks[p]) * 2650);
+        deliveryRows.push(`${sid},${p},${seq},${t},${chunkSize}`);
+      }
+    }
+    loadedFiles.push({ filename: 'sample-client-rtt.csv', text: rttRows.join('\n'), zone: 'client' });
+    loadedFiles.push({ filename: 'sample-server-delivery.csv', text: deliveryRows.join('\n'), zone: 'server' });
+
+    reingestAll();
   });
 
   renderAll();
+  renderChips();
 })();
 </script>
 </body>
