@@ -9,6 +9,22 @@ per path. Go, runs on Linux/Ubuntu (and Windows, for local dev).
 > concurrency model, and the non-obvious bugs already found and fixed here,
 > see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+## Contents
+
+- [How it works](#how-it-works)
+  - [Why not MPTCP?](#why-not-mptcp)
+  - [Why not `mp-quic` (the academic multipath QUIC fork)?](#why-not-mp-quic-the-academic-multipath-quic-fork)
+- [The `quic-go` patch](#the-quic-go-patch)
+- [Layout](#layout)
+- [Build](#build)
+- [Run](#run)
+  - [Flags](#flags)
+  - [Continuous mode](#continuous-mode)
+    - [Constant-bitrate (video-like) streaming](#constant-bitrate-video-like-streaming)
+- [Adding a congestion control module](#adding-a-congestion-control-module)
+- [Adding a scheduler](#adding-a-scheduler)
+- [Known limitations / next steps](#known-limitations--next-steps)
+
 ## How it works
 
 There is no off-the-shelf Go library that gives you both real IETF

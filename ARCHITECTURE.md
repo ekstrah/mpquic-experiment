@@ -5,6 +5,18 @@ high-level pitch and CLI usage; this document is the "how it actually
 works" tour — wire format, lifecycle, concurrency, and the non-obvious bugs
 already found and fixed, so they don't get reintroduced.
 
+## Contents
+
+- [Mental model](#mental-model)
+- [Repository map](#repository-map)
+- [Wire protocol](#wire-protocol)
+- [Session correlation](#session-correlation)
+- [Connection lifecycle (and the bug that lived here)](#connection-lifecycle-and-the-bug-that-lived-here)
+- [Data integrity](#data-integrity)
+- [Concurrency model](#concurrency-model)
+- [Extending the system](#extending-the-system)
+- [Testing](#testing)
+
 ## Mental model
 
 Two independent, single-purpose processes, `cmd/client` and `cmd/server`,
