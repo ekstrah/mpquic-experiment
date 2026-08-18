@@ -166,7 +166,7 @@
 <div class="viz-root">
   <div class="page">
     <h1>MPQUIC results viewer</h1>
-    <p class="sub">Load one or more <code>*-results.csv</code> files written by <code>cmd/client</code> or <code>cmd/server</code> (the <code>-out</code> flag prefix). Nothing leaves your browser — parsing happens locally.</p>
+    <p class="sub">Load one or more <code>*-results.csv</code> files written by <code>cmd/client</code> or <code>cmd/server</code> (the <code>-out</code> flag prefix). Load a client and a server CSV from the <b>same session</b> together and they're automatically paired into one client-vs-server comparison. Nothing leaves your browser — parsing happens locally.</p>
 
     <div class="dropzone" id="dropzone">
       <div class="dropzone-text">Drag CSV files here, or <b>choose files</b> to add a run.</div>
@@ -232,11 +232,13 @@
       if (row.length < 2) continue;
       const sid = row[iSession];
       if (!sid) continue;
+      const role = row[iRole] || '';
       const pathIndex = parseInt(row[iPath], 10);
-      let run = runs.get(sid);
+      const key = sid + '#' + role;
+      let run = runs.get(key);
       if (!run) {
-        run = { role: row[iRole] || '', scheduler: '', totalBytes: 0, durationMs: 0, integrityOk: false, sourceFile: filename, paths: [] };
-        runs.set(sid, run);
+        run = { sid, role, scheduler: '', totalBytes: 0, durationMs: 0, integrityOk: false, sourceFile: filename, paths: [] };
+        runs.set(key, run);
       }
       if (pathIndex === -1) {
         run.totalBytes = parseInt(row[iBytes], 10) || 0;
@@ -404,6 +406,93 @@
     container.appendChild(svg);
   }
 
+  // Renders a grouped column chart: each category shows one sub-bar per series.
+  // categories: [{label, sub, values:[v0,v1,...]}], seriesDefs: [{name,color}]
+  function renderGroupedColumnChart(container, categories, seriesDefs, opts) {
+    const width = Math.max(280, container.clientWidth || 280);
+    const height = 200;
+    const padL = 40, padR = 12, padT = 14, padB = 34;
+    const plotW = width - padL - padR, plotH = height - padT - padB;
+    const maxVal = Math.max(1, ...categories.flatMap(c => c.values));
+    const step = niceStep(maxVal);
+    const niceMax = Math.ceil(maxVal / step) * step || step;
+    const n = categories.length;
+    const bandW = plotW / n;
+    const nSeries = seriesDefs.length;
+    const gap = 2;
+    const groupW = Math.min(24 * nSeries + gap * (nSeries - 1), bandW - 12);
+    const barW = (groupW - gap * (nSeries - 1)) / nSeries;
+
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', height);
+
+    const gridCount = 4;
+    for (let g = 0; g <= gridCount; g++) {
+      const v = (niceMax / gridCount) * g;
+      const y = padT + plotH - (v / niceMax) * plotH;
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', padL); line.setAttribute('x2', width - padR);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      line.setAttribute('stroke', 'var(--grid)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+      const t = document.createElementNS(svgNS, 'text');
+      t.setAttribute('x', padL - 8); t.setAttribute('y', y + 3);
+      t.setAttribute('text-anchor', 'end');
+      t.setAttribute('class', 'ytick');
+      t.textContent = opts.yTickFmt(v);
+      svg.appendChild(t);
+    }
+    const base = document.createElementNS(svgNS, 'line');
+    base.setAttribute('x1', padL); base.setAttribute('x2', width - padR);
+    base.setAttribute('y1', padT + plotH); base.setAttribute('y2', padT + plotH);
+    base.setAttribute('stroke', 'var(--baseline)');
+    base.setAttribute('stroke-width', '1');
+    svg.appendChild(base);
+
+    categories.forEach((cat, i) => {
+      const groupX = padL + bandW * i + (bandW - groupW) / 2;
+      cat.values.forEach((val, s) => {
+        const sdef = seriesDefs[s];
+        const barH = niceMax > 0 ? (val / niceMax) * plotH : 0;
+        const h = Math.max(barH, 0.5);
+        const x = groupX + s * (barW + gap);
+        const y = padT + plotH - h;
+        const r = Math.min(4, h);
+
+        const bar = document.createElementNS(svgNS, 'path');
+        const dPath = `M ${x} ${y + h} L ${x} ${y + r} Q ${x} ${y} ${x + r} ${y} L ${x + barW - r} ${y} Q ${x + barW} ${y} ${x + barW} ${y + r} L ${x + barW} ${y + h} Z`;
+        bar.setAttribute('d', dPath);
+        bar.setAttribute('fill', sdef.color);
+        bar.setAttribute('class', 'col');
+        bar.setAttribute('tabindex', '0');
+        svg.appendChild(bar);
+
+        const tt = (evt) => showTooltip(evt.clientX, evt.clientY, [{
+          color: sdef.color, value: opts.valueFmt(val), label: sdef.name + ' · ' + (cat.sub || cat.label),
+        }]);
+        bar.addEventListener('pointermove', tt);
+        bar.addEventListener('pointerenter', tt);
+        bar.addEventListener('pointerleave', hideTooltip);
+        bar.addEventListener('focus', () => showTooltip(x + width * 0.3, y, [{ color: sdef.color, value: opts.valueFmt(val), label: sdef.name + ' · ' + (cat.sub || cat.label) }]));
+        bar.addEventListener('blur', hideTooltip);
+      });
+
+      const xt = document.createElementNS(svgNS, 'text');
+      xt.setAttribute('x', padL + bandW * i + bandW / 2); xt.setAttribute('y', padT + plotH + 16);
+      xt.setAttribute('text-anchor', 'middle');
+      xt.setAttribute('class', 'axislabel');
+      xt.textContent = cat.label;
+      svg.appendChild(xt);
+    });
+
+    container.innerHTML = '';
+    container.appendChild(svg);
+  }
+
   function pathColor(pathIndex) { return SLOTS[pathIndex % SLOTS.length]; }
 
   function renderRun(sid, run, cardEl) {
@@ -529,6 +618,131 @@
     cardEl.appendChild(details);
   }
 
+  const CLIENT_COLOR = SLOTS[0];
+  const SERVER_COLOR = SLOTS[1];
+
+  function renderPairedRun(sid, clientRun, serverRun, cardEl) {
+    const cPaths = clientRun.paths.slice().sort((a, b) => a.index - b.index);
+    const sPaths = serverRun.paths.slice().sort((a, b) => a.index - b.index);
+    const cByIdx = new Map(cPaths.map(p => [p.index, p]));
+    const sByIdx = new Map(sPaths.map(p => [p.index, p]));
+    const allIdx = Array.from(new Set([...cByIdx.keys(), ...sByIdx.keys()])).sort((a, b) => a - b);
+
+    const head = document.createElement('div');
+    head.className = 'run-head';
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'run-title';
+    title.textContent = 'Client ↔ Server · scheduler=' + (clientRun.scheduler || serverRun.scheduler || 'n/a') + ' · ' + allIdx.length + ' path' + (allIdx.length === 1 ? '' : 's');
+    const meta = document.createElement('div');
+    meta.className = 'run-meta';
+    meta.textContent = 'session ' + sid.slice(0, 12) + (sid.length > 12 ? '…' : '') + '  ·  ' + clientRun.sourceFile + ' + ' + serverRun.sourceFile;
+    titleWrap.appendChild(title); titleWrap.appendChild(meta);
+
+    const pill = document.createElement('span');
+    if (serverRun.integrityOk) {
+      pill.className = 'pill pill-good';
+      pill.innerHTML = '<span class="dot"></span>';
+      pill.appendChild(document.createTextNode('integrity OK (server-verified)'));
+    } else {
+      pill.className = 'pill pill-critical';
+      pill.innerHTML = '<span class="dot"></span>';
+      pill.appendChild(document.createTextNode('integrity FAILED (server-verified)'));
+    }
+    head.appendChild(titleWrap);
+    head.appendChild(pill);
+    cardEl.appendChild(head);
+
+    const cThroughput = mbps(clientRun.totalBytes, clientRun.durationMs);
+    const sThroughput = mbps(serverRun.totalBytes, serverRun.durationMs);
+
+    const table = document.createElement('table');
+    table.className = 'rawtable';
+    table.style.marginBottom = '18px';
+    const headRow = document.createElement('tr');
+    ['', 'Client (sent)', 'Server (received)'].forEach(h => { const th = document.createElement('th'); th.textContent = h; headRow.appendChild(th); });
+    table.appendChild(headRow);
+    [
+      ['Total bytes', fmtBytes(clientRun.totalBytes), fmtBytes(serverRun.totalBytes)],
+      ['Duration', fmtMs(clientRun.durationMs), fmtMs(serverRun.durationMs)],
+      ['Throughput', cThroughput.toFixed(1) + ' Mbps', sThroughput.toFixed(1) + ' Mbps'],
+    ].forEach(([label, c, s]) => {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th'); th.textContent = label; th.style.fontWeight = '600';
+      const tdc = document.createElement('td'); tdc.textContent = c;
+      const tds = document.createElement('td'); tds.textContent = s;
+      tr.appendChild(th); tr.appendChild(tdc); tr.appendChild(tds);
+      table.appendChild(tr);
+    });
+    cardEl.appendChild(table);
+
+    const seriesDefs = [{ name: 'Client', color: CLIENT_COLOR }, { name: 'Server', color: SERVER_COLOR }];
+
+    const charts = document.createElement('div');
+    charts.className = 'charts';
+
+    const bytesCol = document.createElement('div');
+    const bytesTitle = document.createElement('div'); bytesTitle.className = 'chart-title'; bytesTitle.textContent = 'Bytes by path — client sent vs server received';
+    const bytesWrap = document.createElement('div'); bytesWrap.className = 'chart-wrap';
+    bytesCol.appendChild(bytesTitle); bytesCol.appendChild(bytesWrap);
+
+    const thruCol = document.createElement('div');
+    const thruTitle = document.createElement('div'); thruTitle.className = 'chart-title'; thruTitle.textContent = 'Throughput by path (Mbps) — client vs server';
+    const thruWrap = document.createElement('div'); thruWrap.className = 'chart-wrap';
+    thruCol.appendChild(thruTitle); thruCol.appendChild(thruWrap);
+
+    charts.appendChild(bytesCol); charts.appendChild(thruCol);
+    cardEl.appendChild(charts);
+
+    const bytesCats = allIdx.map(idx => {
+      const cp = cByIdx.get(idx), sp = sByIdx.get(idx);
+      const cc = (cp && cp.cc) || (sp && sp.cc) || 'cc?';
+      return { label: 'P' + idx, sub: 'path ' + idx + ' · ' + cc, values: [cp ? cp.bytes : 0, sp ? sp.bytes : 0] };
+    });
+    const thruCats = allIdx.map(idx => {
+      const cp = cByIdx.get(idx), sp = sByIdx.get(idx);
+      const cc = (cp && cp.cc) || (sp && sp.cc) || 'cc?';
+      return { label: 'P' + idx, sub: 'path ' + idx + ' · ' + cc, values: [cp ? mbps(cp.bytes, cp.durationMs) : 0, sp ? mbps(sp.bytes, sp.durationMs) : 0] };
+    });
+    renderGroupedColumnChart(bytesWrap, bytesCats, seriesDefs, { valueFmt: fmtBytes, yTickFmt: fmtBytes });
+    renderGroupedColumnChart(thruWrap, thruCats, seriesDefs, { valueFmt: v => v.toFixed(1), yTickFmt: v => v.toFixed(0) });
+
+    const legend = document.createElement('div');
+    legend.className = 'legend';
+    seriesDefs.forEach(sd => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      const sw = document.createElement('span'); sw.className = 'legend-swatch'; sw.style.background = sd.color;
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(sd.name));
+      legend.appendChild(item);
+    });
+    cardEl.appendChild(legend);
+
+    const details = document.createElement('details');
+    details.className = 'tv';
+    const summary = document.createElement('summary'); summary.textContent = 'Table view';
+    details.appendChild(summary);
+    const rawTable = document.createElement('table');
+    rawTable.className = 'rawtable';
+    const thead = document.createElement('tr');
+    ['Role', 'Path', 'Local addr', 'Remote addr', 'CC', 'Bytes', 'Chunks', 'Duration', 'Mbps'].forEach(h => {
+      const th = document.createElement('th'); th.textContent = h; thead.appendChild(th);
+    });
+    rawTable.appendChild(thead);
+    [['client', cPaths], ['server', sPaths]].forEach(([role, paths]) => {
+      paths.forEach(p => {
+        const tr = document.createElement('tr');
+        [role, p.index, p.local, p.remote, p.cc, fmtBytes(p.bytes), p.chunks, fmtMs(p.durationMs), mbps(p.bytes, p.durationMs).toFixed(1)].forEach(v => {
+          const td = document.createElement('td'); td.textContent = String(v); tr.appendChild(td);
+        });
+        rawTable.appendChild(tr);
+      });
+    });
+    details.appendChild(rawTable);
+    cardEl.appendChild(details);
+  }
+
   function renderComparison(container, sortedRuns) {
     if (sortedRuns.length < 2) return;
     const wrap = document.createElement('div');
@@ -570,14 +784,32 @@
       content.innerHTML = '<div class="empty">No runs loaded yet. Add a <code>*-results.csv</code> file, or click "Load sample data" to preview.</div>';
       return;
     }
-    const sorted = Array.from(runs.entries());
-    sorted.forEach(([sid, run]) => {
+    const bySession = new Map();
+    runs.forEach(run => {
+      if (!bySession.has(run.sid)) bySession.set(run.sid, {});
+      bySession.get(run.sid)[run.role] = run;
+    });
+
+    const sessionIds = Array.from(bySession.keys());
+    sessionIds.forEach(sid => {
+      const pair = bySession.get(sid);
       const card = document.createElement('div');
       card.className = 'run-card';
-      renderRun(sid, run, card);
+      if (pair.client && pair.server) {
+        renderPairedRun(sid, pair.client, pair.server, card);
+      } else {
+        renderRun(sid, pair.client || pair.server, card);
+      }
       content.appendChild(card);
     });
-    renderComparison(content, sorted);
+
+    // One representative entry per session (server preferred — it's the
+    // receiving, authoritative side) feeds the cross-session comparison.
+    const reps = sessionIds.map(sid => {
+      const pair = bySession.get(sid);
+      return [sid, pair.server || pair.client];
+    });
+    renderComparison(content, reps);
   }
 
   function loadFiles(fileList) {
@@ -605,16 +837,23 @@
   dropzone.addEventListener('drop', e => loadFiles(e.dataTransfer.files));
 
   document.getElementById('sampleBtn').addEventListener('click', () => {
-    const sampleServer = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
-a1b2c3d4e5f6,server,0,10.0.0.2:5000,10.0.0.1:51000,6291456,192,4180,cubic,roundrobin,true
-a1b2c3d4e5f6,server,1,10.0.1.2:5000,10.0.1.1:51000,4194304,128,4180,bbr,roundrobin,true
-a1b2c3d4e5f6,server,-1,,,10485760,,4180,,roundrobin,true`;
+    const sid = 'a1b2c3d4e5f6';
     const sampleClient = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
-f6e5d4c3b2a1,client,0,192.168.9.39:0,10.0.0.1:5000,3145728,96,2650,cubic,weighted,false
-f6e5d4c3b2a1,client,1,192.168.9.40:0,10.0.1.1:5000,7340032,224,2650,bbr,weighted,false
-f6e5d4c3b2a1,client,-1,,,10485760,,2650,,weighted,false`;
-    ingest(sampleServer, 'sample-server-results.csv');
+${sid},client,0,192.168.9.39:0,10.0.0.1:5000,6291456,192,2650,cubic,weighted,false
+${sid},client,1,192.168.9.40:0,10.0.1.1:5000,4194304,128,2650,bbr,weighted,false
+${sid},client,-1,,,10485760,,2650,,weighted,false`;
+    const sampleServer = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
+${sid},server,0,10.0.0.2:5000,10.0.0.1:51000,6291456,192,2680,,weighted,true
+${sid},server,1,10.0.1.2:5000,10.0.1.1:51000,4194304,128,2680,,weighted,true
+${sid},server,-1,,,10485760,,2680,,weighted,true`;
+    // A second, unpaired session (only a client run) to show cross-run comparison.
+    const sid2 = 'b7c8d9e0f1a2';
+    const sampleClient2 = `session_id,role,path_index,local_addr,remote_addr,bytes,chunks,duration_ms,congestion_control,scheduler,integrity_ok
+${sid2},client,0,192.168.9.39:0,10.0.0.1:5000,10485760,320,4400,cubic,roundrobin,false
+${sid2},client,-1,,,10485760,,4400,,roundrobin,false`;
     ingest(sampleClient, 'sample-client-results.csv');
+    ingest(sampleServer, 'sample-server-results.csv');
+    ingest(sampleClient2, 'sample2-client-results.csv');
     renderAll();
   });
 
