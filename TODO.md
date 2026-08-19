@@ -19,10 +19,6 @@
       Investigation item below — only build it if real measurements show
       correlated spikes.
 
-### Link emulation / testbed
-- [ ] No netns/tc-based link emulation yet (latency/loss/bandwidth
-      impairment) — paths are real local NICs/IPs only for now.
-
 ### Continuous mode realism
 - [ ] Burst sizes are uniform-random (`-burst-min-size`/`-burst-max-size`),
       not a modeled traffic shape (e.g. mostly-small with occasional large
@@ -31,19 +27,28 @@
       Both of the above can be layered on the existing `BurstID`/
       `BurstBytes` wire framing without another protocol change.
 
-### Scale
-- [ ] One-shot (`-size`) transfers buffer the whole payload in server
-      memory — see `ponytail:` comment in `internal/transfer/chunk.go`.
-      Swap to temp file + `WriteAt` if transfer sizes need to exceed
-      available RAM. `-continuous` mode doesn't have this problem.
-
 ## Investigation
 
+### Link emulation / testbed
+- [ ] No netns/tc-based link emulation yet (latency/loss/bandwidth
+      impairment) — paths are real local NICs/IPs only for now. Needed to
+      exercise heterogeneous conditions (incl. the shared-bottleneck check
+      below) without depending on multi-NIC hardware and live links.
+
+### Shared bottleneck
 - [ ] Check whether a shared bottleneck is actually occurring in the setup:
       look for RTT/loss spikes across paths correlating in time
       (simultaneous spikes on independent paths = signal of a shared queue
       somewhere, vs. independent spikes = no shared bottleneck). Drives
       whether the Schedulers item above is worth building.
+
+## Consideration
+
+### Scale
+- [ ] One-shot (`-size`) transfers buffer the whole payload in server
+      memory — see `ponytail:` comment in `internal/transfer/chunk.go`.
+      Swap to temp file + `WriteAt` if transfer sizes need to exceed
+      available RAM. `-continuous` mode doesn't have this problem.
 
 ## Done
 - [x] Integrity bug (client force-closes QUIC conn before tail chunks
