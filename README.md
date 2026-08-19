@@ -208,13 +208,23 @@ Setting `-burst-min-size` equal to `-burst-max-size` removes the random
 sizing (`sendBurst` only adds jitter when `max > min`) and gives a fixed
 size sent at a fixed interval -- structurally the same shape as one video
 frame sent every frame period, i.e. a constant-bitrate (CBR) stream. This
-is the traffic model to reach for when comparing against work that used
-CBR video/RTP-style traffic rather than bursty traffic -- e.g. Baltaci et
-al. (IEEE Access 2023, 10.1109/ACCESS.2023.3325702, see "Why not MPTCP"
-above) generated their MP-DCCP video traffic as a constant-bitrate flow
-specifically to avoid confounding adaptive-bitrate behavior with the
-transport layer's own congestion control, the same reasoning that applies
-here.
+is the traffic model to reach for when comparing against Baltaci et al.
+(IEEE Access 2023, 10.1109/ACCESS.2023.3325702, see "Why not MPTCP"
+above): they deliberately used CBR video (GStreamer RTP over MPTCP, and a
+matching-rate `iPerf3` flow over MP-DCCP since no video app existed for it
+at the time) rather than adaptive bitrate, specifically to avoid
+confounding ABR decisions with the transport layer's own congestion
+control -- the same reasoning applies here. **This project targets MPQUIC
+(independent-QUIC-per-path), not MPTCP/MP-DCCP** -- we're reusing their RP
+scenario and traffic model as the baseline to compare against, not
+reimplementing their transport protocols.
+
+Their RP (Remote Piloting) scenario is bidirectional and asymmetric:
+
+| Direction              | Traffic | Rate    |
+|-------------------------|---------|---------|
+| Uplink (AV -> pilot)    | video   | 10 Mbps |
+| Downlink (pilot -> AV)  | control | 1 Mbps  |
 
 Compute burst size from a target bitrate and frame rate:
 
@@ -222,7 +232,7 @@ Compute burst size from a target bitrate and frame rate:
 bytes per frame = (bitrate in bits/sec) / 8 / (frames per second)
 ```
 
-e.g. 10 Mbps at 30fps: `10_000_000 / 8 / 30 ≈ 41667` bytes every `1/30 s ≈ 33ms`:
+e.g. 10 Mbps video at 30fps: `10_000_000 / 8 / 30 ≈ 41667` bytes every `1/30 s ≈ 33ms`:
 
 ```sh
 ./bin/client -server <server-ip>:4433 -continuous \
@@ -232,6 +242,20 @@ e.g. 10 Mbps at 30fps: `10_000_000 / 8 / 30 ≈ 41667` bytes every `1/30 s ≈ 3
 
 Verified on loopback: 61 "frames" over ~2s, every one exactly 41667 bytes,
 landing ~33ms apart in `-bursts.csv`'s `start_ms` column.
+
+The 1 Mbps control stream (e.g. at 50 command updates/sec, a plausible RP
+control rate): `1_000_000 / 8 / 50 = 2500` bytes every `1/50 s = 20ms`:
+
+```sh
+./bin/client -server <server-ip>:4433 -continuous \
+  -duration 60s -burst-min-size 2500 -burst-max-size 2500 -burst-interval 20ms \
+  -out client-results
+```
+
+Note this tool currently only sends bulk data one direction (client ->
+server); reproducing the paper's *simultaneous* bidirectional traffic
+needs two client/server pairs running concurrently, one per direction --
+see `TODO.md`.
 
 Results are reported incrementally rather than once at the end (a
 continuous session may run indefinitely): both sides append one row per

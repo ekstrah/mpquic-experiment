@@ -37,6 +37,18 @@ with no dependency line can be picked up any time.
       CCs keep it artificially low).
       **Depends on:** Investigation → CC/scheduler metric mismatch (only
       build if confirmed).
+- [ ] Failure/degradation-aware scheduling: paths are a static list built
+      once at session start (`cmd/client/main.go:386`) and schedulers only
+      ever see RTT (`internal/scheduler/scheduler.go`) — there's no
+      liveness signal, so a genuinely dead/disconnected path just sits in
+      the list with a stale RTT reading instead of being explicitly routed
+      around. Baltaci et al.'s paper evaluates exactly this spectrum
+      (lowRTT-with-fallback, BLEST, redundant) — our `roundrobin`/
+      `rtt-aware` degrade gracefully as RTT rises but don't react to an
+      outright path failure or bottleneck the way the paper's schedulers
+      do.
+      **Depends on:** Implementation → Dynamic multipath (needs a way to
+      signal a path is down/removed, not just slow).
 
 ### Continuous mode realism
 - [ ] Burst sizes are uniform-random (`-burst-min-size`/`-burst-max-size`),
@@ -45,6 +57,19 @@ with no dependency line can be picked up any time.
 - [ ] Burst content is synthetic random data, not real files/sensor input.
       Both of the above can be layered on the existing `BurstID`/
       `BurstBytes` wire framing without another protocol change.
+- [ ] Bidirectional simultaneous traffic: Baltaci et al.'s RP scenario runs
+      video (10 Mbps, AV -> pilot) and control (1 Mbps, pilot -> AV)
+      *simultaneously in opposite directions*. This tool only sends bulk
+      data one way (client -> server); the server never sends bulk data
+      back (see Congestion control item above). Matching the paper's
+      scenario for a real comparison needs either running two
+      client/server pairs concurrently (one per direction, quick to try
+      first) or extending the protocol for true simultaneous bidirectional
+      streams (bigger change — only worth it if running two pairs proves
+      insufficient, e.g. if they need to share path state).
+      **Depends on:** nothing to try the two-pairs approach; the protocol
+      extension depends on Implementation → Congestion control (server
+      needs something to control once it sends bulk data).
 
 ## Investigation
 
