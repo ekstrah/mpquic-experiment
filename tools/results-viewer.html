@@ -954,6 +954,39 @@
     });
     renderLegendFor(cardEl, series);
 
+    // Burst size is a client-chosen constant in CBR mode (-burst-min-size
+    // == -burst-max-size) -- it never reflects network conditions. Delivery
+    // duration (end - start) does: netem-style delay/loss/rate limiting on
+    // a path shows up here, not in the size chart above.
+    const durationTitle = document.createElement('div');
+    durationTitle.className = 'chart-title';
+    durationTitle.style.margin = '16px 0 4px';
+    durationTitle.textContent = 'Delivery duration per burst';
+    cardEl.appendChild(durationTitle);
+
+    const durationSeries = [];
+    if (bd.client.length) {
+      durationSeries.push({
+        name: 'Client (send duration)', color: CLIENT_COLOR,
+        points: bd.client.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.endMs - b.startMs })),
+      });
+    }
+    if (bd.server.length) {
+      durationSeries.push({
+        name: 'Server (delivery duration)', color: SERVER_COLOR,
+        points: bd.server.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.endMs - b.startMs })),
+      });
+    }
+    const durationWrap = document.createElement('div');
+    durationWrap.className = 'chart-wrap';
+    cardEl.appendChild(durationWrap);
+    renderLineChart(durationWrap, durationSeries, {
+      xTickFmt: v => v.toFixed(0) + 's',
+      yTickFmt: fmtMs,
+      valueFmt: fmtMs,
+    });
+    renderLegendFor(cardEl, durationSeries);
+
     const details = document.createElement('details');
     details.className = 'tv';
     const summary = document.createElement('summary'); summary.textContent = 'Table view';
