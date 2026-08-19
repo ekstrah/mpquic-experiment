@@ -2,3 +2,6 @@
 *-results.json
 *-results.csv
 *.log
+setup-env.sh
+run-server.sh
+cleanup.sh
