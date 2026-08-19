@@ -73,13 +73,39 @@ with no dependency line can be picked up any time.
 
 ## Investigation
 
-### Link emulation / testbed
-- [ ] No netns/tc-based link emulation yet (latency/loss/bandwidth
-      impairment) — paths are real local NICs/IPs only for now. Needed to
-      exercise heterogeneous conditions on demand rather than depending on
-      multi-NIC hardware and live links; unblocks Dynamic multipath,
-      Shared bottleneck, and CC/scheduler metric mismatch below.
+### Network characteristics reference
+- [x] Extract the paper's measured link characteristics into a markdown
+      reference doc (e.g. `docs/link-characteristics.md`) to drive the tc
+      configs below: LTE (uplink latency avg ~53ms w/ spikes to 2900ms,
+      downlink avg ~45ms, PER ~0.006% both directions, data rate
+      fluctuating ~15-45Mbps, mean HO duration 20.01ms/std 195.13ms, mean
+      HO frequency 0.05Hz/variance 0.042Hz) and LEO/Starlink (latency
+      12-38ms both directions, PER ~0.17%, capacity ~62Mbps down/18Mbps
+      up, modeled as constant). **Caveat:** the paper only measured LTE
+      and Starlink LEO — it explicitly used LTE instead of 5G because of
+      "unpredictable and insufficient 5G coverage in the air," and doesn't
+      cover WiFi mesh at all. 5G/WiFi-mesh characteristics would have to
+      come from a different source (e.g. the "Multi-Connectivity for
+      UAVs" aerial-mesh paper found earlier) or be reasonable estimates,
+      not pulled from this paper — don't fabricate paper-attributed
+      numbers for links it didn't test.
       **Depends on:** nothing.
+
+### Link emulation / testbed
+- [ ] Build the tc/netem shaping now that both machines are real Ubuntu
+      hosts (not a single dev machine) — no proxy shim or Docker needed.
+      Plan: IP-alias each path onto the existing NIC (`ip addr add
+      <ip>/24 dev eth0 label eth0:pathN`, no multi-NIC hardware required),
+      select paths via the client's existing `-local ip1,ip2` (source-IP
+      based, `cmd/client/main.go:33`), then use `tc`/`netem` on each
+      host's egress interface with an `htb` root qdisc classifying by
+      source IP into one class per path, each with a child `netem`
+      (delay/jitter/loss) and `htb` rate cap for bandwidth. Needed to
+      exercise heterogeneous conditions on demand rather than depending on
+      live links; unblocks Dynamic multipath, Shared bottleneck, and
+      CC/scheduler metric mismatch below.
+      **Depends on:** Network characteristics reference above (need the
+      actual numbers before writing tc configs).
 
 ### Shared bottleneck
 - [ ] Check whether a shared bottleneck is actually occurring in the setup:
