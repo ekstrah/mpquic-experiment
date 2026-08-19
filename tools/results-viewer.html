@@ -308,6 +308,7 @@
   function ingestBurst(rows, header) {
     const idx = name => header.indexOf(name);
     const iSession = idx('session_id'), iRole = idx('role'), iBurst = idx('burst_id'),
+          iPath = idx('path_index'),
           iBytesExp = idx('bytes_expected'), iBytesRecv = idx('bytes_received'),
           iChunks = idx('chunks'), iCorrupted = idx('chunks_corrupted'),
           iComplete = idx('complete'), iStart = idx('start_ms'), iEnd = idx('end_ms');
@@ -318,8 +319,12 @@
       if (!sid) continue;
       const role = row[iRole] === 'server' ? 'server' : 'client';
       if (!burstData.has(sid)) burstData.set(sid, { client: [], server: [] });
+      // path_index -1 (or absent, for CSVs from before this column existed)
+      // means "aggregate across all paths" -- the charts below only plot
+      // that row so per-path breakdown rows don't get double-counted.
       burstData.get(sid)[role].push({
         burstID: row[iBurst] || '',
+        pathIndex: iPath >= 0 && row[iPath] !== '' ? parseInt(row[iPath], 10) : -1,
         bytesExpected: parseInt(row[iBytesExp], 10) || 0,
         bytesReceived: parseInt(row[iBytesRecv], 10) || 0,
         chunks: parseInt(row[iChunks], 10) || 0,
@@ -895,10 +900,19 @@
     const bd = burstData.get(sid);
     if (!bd || (!bd.client.length && !bd.server.length)) return;
 
+    // path_index -1 rows are the whole-burst aggregate (see ingestBurst) --
+    // charts and summary stats use only those, so per-path breakdown rows
+    // (kept in bd.client/bd.server for the table below) don't get double
+    // counted into the totals.
+    const agg = {
+      client: bd.client.filter(b => b.pathIndex === -1),
+      server: bd.server.filter(b => b.pathIndex === -1),
+    };
+
     // Server is authoritative (it reports what actually arrived), same
     // convention as elsewhere in this file -- fall back to client if only
     // the client's bursts.csv was loaded.
-    const primary = bd.server.length ? bd.server : bd.client;
+    const primary = agg.server.length ? agg.server : agg.client;
     const total = primary.length;
     const complete = primary.filter(b => b.complete).length;
     const corruptedTotal = primary.reduce((s, b) => s + b.corrupted, 0);
@@ -932,16 +946,16 @@
     cardEl.appendChild(stats);
 
     const series = [];
-    if (bd.client.length) {
+    if (agg.client.length) {
       series.push({
         name: 'Client (sent)', color: CLIENT_COLOR,
-        points: bd.client.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.bytesExpected })),
+        points: agg.client.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.bytesExpected })),
       });
     }
-    if (bd.server.length) {
+    if (agg.server.length) {
       series.push({
         name: 'Server (received)', color: SERVER_COLOR,
-        points: bd.server.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.bytesReceived })),
+        points: agg.server.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.bytesReceived })),
       });
     }
     const wrap = document.createElement('div');
@@ -965,16 +979,16 @@
     cardEl.appendChild(durationTitle);
 
     const durationSeries = [];
-    if (bd.client.length) {
+    if (agg.client.length) {
       durationSeries.push({
         name: 'Client (send duration)', color: CLIENT_COLOR,
-        points: bd.client.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.endMs - b.startMs })),
+        points: agg.client.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.endMs - b.startMs })),
       });
     }
-    if (bd.server.length) {
+    if (agg.server.length) {
       durationSeries.push({
         name: 'Server (delivery duration)', color: SERVER_COLOR,
-        points: bd.server.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.endMs - b.startMs })),
+        points: agg.server.slice().sort((a, b) => a.startMs - b.startMs).map(b => ({ x: b.startMs / 1000, y: b.endMs - b.startMs })),
       });
     }
     const durationWrap = document.createElement('div');
@@ -994,14 +1008,17 @@
     const table = document.createElement('table');
     table.className = 'rawtable';
     const thead = document.createElement('tr');
-    ['Role', 'Burst', 'Bytes expected', 'Bytes received', 'Chunks', 'Corrupted', 'Status', 'Start', 'End'].forEach(h => {
+    ['Role', 'Path', 'Burst', 'Bytes expected', 'Bytes received', 'Chunks', 'Corrupted', 'Status', 'Start', 'End'].forEach(h => {
       const th = document.createElement('th'); th.textContent = h; thead.appendChild(th);
     });
     table.appendChild(thead);
     [['client', bd.client], ['server', bd.server]].forEach(([role, list]) => {
-      list.slice().sort((a, b) => a.startMs - b.startMs).forEach(b => {
+      list.slice().sort((a, b) => a.startMs - b.startMs || a.pathIndex - b.pathIndex).forEach(b => {
         const tr = document.createElement('tr');
         const roleTd = document.createElement('td'); roleTd.textContent = role; tr.appendChild(roleTd);
+        const pathTd = document.createElement('td');
+        pathTd.textContent = b.pathIndex === -1 ? 'all' : String(b.pathIndex);
+        tr.appendChild(pathTd);
         [b.burstID, fmtBytes(b.bytesExpected), fmtBytes(b.bytesReceived), b.chunks, b.corrupted].forEach(v => {
           const td = document.createElement('td'); td.textContent = String(v); tr.appendChild(td);
         });
@@ -1568,18 +1585,27 @@ ${sid2},client,-1,,,10485760,,4400,,roundrobin,false`;
     // one burst going deliberately incomplete/corrupted to show that state.
     const sid3 = 'c3d4e5f6a7b8';
     const burstSizes = [42000, 38000, 51000, 612000, 45000, 39000, 780000, 41000];
-    const clientBurstRows = ['session_id,role,burst_id,bytes_expected,bytes_received,chunks,chunks_corrupted,complete,start_ms,end_ms'];
-    const serverBurstRows = ['session_id,role,burst_id,bytes_expected,bytes_received,chunks,chunks_corrupted,complete,start_ms,end_ms'];
+    const clientBurstRows = ['session_id,role,burst_id,path_index,bytes_expected,bytes_received,chunks,chunks_corrupted,complete,start_ms,end_ms'];
+    const serverBurstRows = ['session_id,role,burst_id,path_index,bytes_expected,bytes_received,chunks,chunks_corrupted,complete,start_ms,end_ms'];
     let tMs = 0;
+    // Split ~60/40 across two paths (path 0 = LTE-like, path 1 = LEO-like)
+    // to preview the per-path breakdown rows alongside the -1 aggregate.
     burstSizes.forEach((size, i) => {
       const burstID = i + 1;
       const chunks = Math.ceil(size / chunkSize);
       const dur = 5 + Math.round(size / 40000);
-      clientBurstRows.push(`${sid3},client,${burstID},${size},${size},${chunks},0,true,${tMs},${tMs + dur}`);
+      const p0 = Math.round(size * 0.6), p1 = size - p0;
+      const p0Chunks = Math.ceil(p0 / chunkSize), p1Chunks = chunks - p0Chunks;
+      clientBurstRows.push(`${sid3},client,${burstID},-1,${size},${size},${chunks},0,true,${tMs},${tMs + dur}`);
+      clientBurstRows.push(`${sid3},client,${burstID},0,${size},${p0},${p0Chunks},0,true,${tMs},${tMs + dur}`);
+      clientBurstRows.push(`${sid3},client,${burstID},1,${size},${p1},${p1Chunks},0,true,${tMs},${tMs + dur}`);
       // Burst 7 (the biggest) arrives short on the server, to preview an incomplete/corrupted row.
       const short = burstID === 7;
       const recv = short ? Math.round(size * 0.7) : size;
-      serverBurstRows.push(`${sid3},server,${burstID},${size},${recv},${short ? chunks - 2 : chunks},${short ? 1 : 0},${!short},${tMs},${tMs + dur}`);
+      const recvP0 = short ? Math.round(p0 * 0.7) : p0, recvP1 = recv - recvP0;
+      serverBurstRows.push(`${sid3},server,${burstID},-1,${size},${recv},${short ? chunks - 2 : chunks},${short ? 1 : 0},${!short},${tMs},${tMs + dur}`);
+      serverBurstRows.push(`${sid3},server,${burstID},0,${size},${recvP0},${short ? p0Chunks - 2 : p0Chunks},${short ? 1 : 0},${recvP0 === p0},${tMs},${tMs + dur}`);
+      serverBurstRows.push(`${sid3},server,${burstID},1,${size},${recvP1},${p1Chunks},0,${recvP1 === p1},${tMs},${tMs + dur}`);
       tMs += 800;
     });
     loadedFiles.push({ filename: 'sample-continuous-client-bursts.csv', text: clientBurstRows.join('\n'), zone: 'client' });

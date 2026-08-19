@@ -205,18 +205,30 @@ func runContinuous(cfg continuousConfig) {
 		chunks := transfer.Split(data, cfg.chunkSize, burstID, size)
 
 		before, beforeChunks := snapshotSent(cfg.paths)
+		beforePerPath := snapshotSentPerPath(cfg.paths)
 		startMs := time.Since(cfg.start).Milliseconds()
 		sendChunks(chunks, cfg.paths, cfg.sched, nil)
 		after, afterChunks := snapshotSent(cfg.paths)
+		afterPerPath := snapshotSentPerPath(cfg.paths)
+		endMs := time.Since(cfg.start).Milliseconds()
 
 		sent := after - before
 		log.Printf("client: burst %d: sent %d/%d bytes (%d chunks)", burstID, sent, size, afterChunks-beforeChunks)
 		burstLog.Add(metrics.BurstSample{
-			SessionID: cfg.sessIDStr, Role: "client", BurstID: burstID,
+			SessionID: cfg.sessIDStr, Role: "client", BurstID: burstID, PathIndex: -1,
 			BytesExpected: size, BytesReceived: sent,
 			Chunks: afterChunks - beforeChunks, Complete: sent == size,
-			StartMs: startMs, EndMs: time.Since(cfg.start).Milliseconds(),
+			StartMs: startMs, EndMs: endMs,
 		})
+		for idx, a := range afterPerPath {
+			b := beforePerPath[idx]
+			burstLog.Add(metrics.BurstSample{
+				SessionID: cfg.sessIDStr, Role: "client", BurstID: burstID, PathIndex: idx,
+				BytesExpected: size, BytesReceived: a.bytes - b.bytes,
+				Chunks: a.chunks - b.chunks, Complete: a.bytes-b.bytes == size,
+				StartMs: startMs, EndMs: endMs,
+			})
+		}
 		if err := metrics.WriteBurstSamplesCSV(cfg.outPrefix+"-bursts.csv", burstLog.Snapshot()); err != nil {
 			log.Printf("client: write bursts csv: %v", err)
 		}
@@ -248,6 +260,24 @@ func snapshotSent(paths []*pathConn) (bytes uint64, chunks int) {
 		pc.mu.Unlock()
 	}
 	return bytes, chunks
+}
+
+// pathSnapshot is snapshotSent's per-path breakdown -- which path(s) a
+// scheduler actually placed a burst's chunks on, visible per burst rather
+// than only as a whole-session total.
+type pathSnapshot struct {
+	bytes  uint64
+	chunks int
+}
+
+func snapshotSentPerPath(paths []*pathConn) map[int]pathSnapshot {
+	out := make(map[int]pathSnapshot, len(paths))
+	for _, pc := range paths {
+		pc.mu.Lock()
+		out[pc.index] = pathSnapshot{bytes: pc.bytesSent, chunks: pc.chunksSent}
+		pc.mu.Unlock()
+	}
+	return out
 }
 
 // drainTimeout bounds how long drainPath waits for the server's delivery

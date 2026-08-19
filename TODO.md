@@ -92,20 +92,25 @@ with no dependency line can be picked up any time.
       **Depends on:** nothing.
 
 ### Link emulation / testbed
-- [ ] Build the tc/netem shaping now that both machines are real Ubuntu
-      hosts (not a single dev machine) — no proxy shim or Docker needed.
-      Plan: IP-alias each path onto the existing NIC (`ip addr add
-      <ip>/24 dev eth0 label eth0:pathN`, no multi-NIC hardware required),
-      select paths via the client's existing `-local ip1,ip2` (source-IP
-      based, `cmd/client/main.go:33`), then use `tc`/`netem` on each
-      host's egress interface with an `htb` root qdisc classifying by
-      source IP into one class per path, each with a child `netem`
-      (delay/jitter/loss) and `htb` rate cap for bandwidth. Needed to
-      exercise heterogeneous conditions on demand rather than depending on
-      live links; unblocks Dynamic multipath, Shared bottleneck, and
-      CC/scheduler metric mismatch below.
-      **Depends on:** Network characteristics reference above (need the
-      actual numbers before writing tc configs).
+- [x] Built and verified working on two real Ubuntu hosts over a direct
+      Ethernet link (`tools/netem.sh`, `tools/netem-client.sh`,
+      `tools/netem-server.sh` — see `docs/netem-emulation.md` for the
+      mechanism). IP-aliased path IPs on `enp131s0`, `tc`/`htb`/`netem`
+      classifying by src (client, uplink) / dst (server, downlink),
+      confirmed with `tc -s qdisc show` showing real packet counts
+      flowing through the shaped LTE/LEO classes. Unblocks Dynamic
+      multipath, Shared bottleneck, and CC/scheduler metric mismatch.
+- [ ] Time-varying delay / handover simulation: current shaping is static
+      for the whole run (see the `ponytail:` comment in `tools/netem.sh`).
+      Two upgrade paths: (a) netem's `distribution pareto` for a
+      heavier-tailed jitter shape, zero new code; (b) a companion script
+      periodically running `tc qdisc change ... netem delay <new-value>`
+      on a timer, for true handover-event behavior (paper's mean HO
+      frequency 0.05Hz ≈ every ~20s). Now directly observable via the
+      per-path burst duration chart in `results-viewer.html` — a real
+      handover-like spike should show up as a bump in one path's duration
+      series specifically.
+      **Depends on:** nothing — Link emulation above is done.
 
 ### Shared bottleneck
 - [ ] Check whether a shared bottleneck is actually occurring in the setup:
@@ -115,6 +120,18 @@ with no dependency line can be picked up any time.
       **Depends on:** Link emulation (for controlled, repeatable
       conditions — could also be attempted on real links, but harder to
       trigger on demand).
+
+### Scheduler comparison under emulated LTE/LEO
+- [ ] Run `roundrobin` vs `rtt-aware` vs `redundant` back to back on the
+      working LTE/LEO emulation, with the new per-path burst breakdown
+      (`path_index` column) visible in the results viewer. Specifically
+      check whether `rtt-aware` skews heavily toward the LEO-like path
+      (lower delay, 25ms vs LTE's 53ms) despite its higher loss (0.17% vs
+      0.006%) — direct evidence of the RTT-vs-loss blind spot discussed
+      for the CC/scheduler metric mismatch item below, observable now
+      without needing a second CC algorithm first.
+      **Depends on:** nothing — Link emulation and per-path breakdown are
+      both done.
 
 ### CC/scheduler metric mismatch
 - [ ] Check whether running different CC algorithms per path (e.g.

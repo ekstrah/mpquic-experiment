@@ -28,6 +28,16 @@ type burstState struct {
 	corrupted     int
 	startedAt     time.Time
 	lastActivity  time.Time
+	perPath       map[int]*PathBurstStats
+}
+
+// PathBurstStats is one path's contribution to a burst -- which path(s) a
+// scheduler actually placed a burst's chunks on, visible per burst rather
+// than only as a whole-session total.
+type PathBurstStats struct {
+	BytesReceived uint64
+	Chunks        int
+	Corrupted     int
 }
 
 // NewBurstTracker returns a tracker that expires a burst (see Expire) once
@@ -41,23 +51,31 @@ func NewBurstTracker(ttl time.Duration) *BurstTracker {
 // applied towards that burst's completion -- a good copy may still arrive
 // on another path under a redundant scheduler. Returns whether this burst
 // is now complete (every byte of BurstBytes accounted for).
-func (t *BurstTracker) Write(c Chunk, corrupted bool) (complete bool) {
+func (t *BurstTracker) Write(c Chunk, corrupted bool, pathIndex int) (complete bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	b, ok := t.bursts[c.BurstID]
 	if !ok {
-		b = &burstState{bytesExpected: c.BurstBytes, seen: make(map[uint64]bool), startedAt: time.Now()}
+		b = &burstState{bytesExpected: c.BurstBytes, seen: make(map[uint64]bool), startedAt: time.Now(), perPath: make(map[int]*PathBurstStats)}
 		t.bursts[c.BurstID] = b
 	}
 	b.lastActivity = time.Now()
 	b.chunks++
+	p, ok := b.perPath[pathIndex]
+	if !ok {
+		p = &PathBurstStats{}
+		b.perPath[pathIndex] = p
+	}
+	p.Chunks++
 	if corrupted {
 		b.corrupted++
+		p.Corrupted++
 		return b.bytesReceived >= b.bytesExpected
 	}
 	if !b.seen[c.Seq] {
 		b.seen[c.Seq] = true
 		b.bytesReceived += uint64(len(c.Data))
+		p.BytesReceived += uint64(len(c.Data))
 	}
 	return b.bytesReceived >= b.bytesExpected
 }
@@ -72,9 +90,14 @@ type BurstStats struct {
 	Complete      bool
 	StartedAt     time.Time
 	LastActivity  time.Time
+	PerPath       map[int]PathBurstStats
 }
 
 func (b *burstState) stats(id uint64) BurstStats {
+	perPath := make(map[int]PathBurstStats, len(b.perPath))
+	for idx, p := range b.perPath {
+		perPath[idx] = *p
+	}
 	return BurstStats{
 		BurstID:       id,
 		BytesExpected: b.bytesExpected,
@@ -84,6 +107,7 @@ func (b *burstState) stats(id uint64) BurstStats {
 		Complete:      b.bytesReceived >= b.bytesExpected,
 		StartedAt:     b.startedAt,
 		LastActivity:  b.lastActivity,
+		PerPath:       perPath,
 	}
 }
 

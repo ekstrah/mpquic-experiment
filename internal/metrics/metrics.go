@@ -137,6 +137,7 @@ type BurstSample struct {
 	SessionID     string
 	Role          string // "client" or "server"
 	BurstID       uint64
+	PathIndex     int // -1 = aggregate across all paths, same convention as -results.csv
 	BytesExpected uint64
 	BytesReceived uint64
 	Chunks        int
@@ -228,13 +229,13 @@ func WriteBurstSamplesCSV(path string, samples []BurstSample) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	header := []string{"session_id", "role", "burst_id", "bytes_expected", "bytes_received", "chunks", "chunks_corrupted", "complete", "start_ms", "end_ms"}
+	header := []string{"session_id", "role", "burst_id", "path_index", "bytes_expected", "bytes_received", "chunks", "chunks_corrupted", "complete", "start_ms", "end_ms"}
 	if err := w.Write(header); err != nil {
 		return err
 	}
 	for _, s := range samples {
 		row := []string{
-			s.SessionID, s.Role, strconv.FormatUint(s.BurstID, 10),
+			s.SessionID, s.Role, strconv.FormatUint(s.BurstID, 10), strconv.Itoa(s.PathIndex),
 			strconv.FormatUint(s.BytesExpected, 10), strconv.FormatUint(s.BytesReceived, 10),
 			strconv.Itoa(s.Chunks), strconv.Itoa(s.Corrupted), strconv.FormatBool(s.Complete),
 			strconv.FormatInt(s.StartMs, 10), strconv.FormatInt(s.EndMs, 10),

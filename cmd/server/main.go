@@ -141,7 +141,7 @@ func handleConn(conn *quic.Conn, reg *sessionRegistry, outPrefix string) {
 			// Continuous session: route to the per-burst tracker regardless
 			// of corrupt (it counts corrupted chunks itself), since there's
 			// no session-wide reassembler in this mode.
-			sess.burstTracker.Write(chunk, corrupt)
+			sess.burstTracker.Write(chunk, corrupt, pathIndex)
 		case !corrupt:
 			sess.reassembler.Write(chunk)
 		}
@@ -304,18 +304,21 @@ func (s *serverSession) recordBursts(stats []transfer.BurstStats) {
 	}
 	sessIDStr := fmt.Sprintf("%x", s.id)
 	for _, b := range stats {
+		startMs, endMs := b.StartedAt.Sub(s.startTime).Milliseconds(), b.LastActivity.Sub(s.startTime).Milliseconds()
 		s.burstLog.Add(metrics.BurstSample{
-			SessionID:     sessIDStr,
-			Role:          "server",
-			BurstID:       b.BurstID,
-			BytesExpected: b.BytesExpected,
-			BytesReceived: b.BytesReceived,
-			Chunks:        b.Chunks,
-			Corrupted:     b.Corrupted,
-			Complete:      b.Complete,
-			StartMs:       b.StartedAt.Sub(s.startTime).Milliseconds(),
-			EndMs:         b.LastActivity.Sub(s.startTime).Milliseconds(),
+			SessionID: sessIDStr, Role: "server", BurstID: b.BurstID, PathIndex: -1,
+			BytesExpected: b.BytesExpected, BytesReceived: b.BytesReceived,
+			Chunks: b.Chunks, Corrupted: b.Corrupted, Complete: b.Complete,
+			StartMs: startMs, EndMs: endMs,
 		})
+		for idx, p := range b.PerPath {
+			s.burstLog.Add(metrics.BurstSample{
+				SessionID: sessIDStr, Role: "server", BurstID: b.BurstID, PathIndex: idx,
+				BytesExpected: b.BytesExpected, BytesReceived: p.BytesReceived,
+				Chunks: p.Chunks, Corrupted: p.Corrupted, Complete: p.BytesReceived >= b.BytesExpected,
+				StartMs: startMs, EndMs: endMs,
+			})
+		}
 		if !b.Complete {
 			log.Printf("server: session %x burst %d incomplete: %d/%d bytes (%d corrupted)",
 				s.id, b.BurstID, b.BytesReceived, b.BytesExpected, b.Corrupted)
