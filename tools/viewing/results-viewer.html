@@ -70,8 +70,7 @@
   .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; line-height: 1.5; }
   code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
 
-  .upload-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 560px) { .upload-row { grid-template-columns: 1fr; } }
+  .upload-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
   .shared-actions { margin-top: 12px; }
 
   .dropzone {
@@ -201,6 +200,15 @@
         <div class="dz-body">Drag CSV files here, or <button class="ghost dz-pick" data-zone="server">choose files</button></div>
         <div class="file-chips" id="chips-server"></div>
         <input type="file" id="fileInput-server" accept=".csv,text/csv" multiple>
+      </div>
+      <div class="dropzone" id="dropzone-rtt" data-zone="rtt">
+        <div class="dz-header">
+          <span class="dz-title">RTT analysis</span>
+          <span class="dz-sub">from <code>cmd/client -out *-client-rtt.csv</code></span>
+        </div>
+        <div class="dz-body">Drag CSV files here, or <button class="ghost dz-pick" data-zone="rtt">choose files</button></div>
+        <div class="file-chips" id="chips-rtt"></div>
+        <input type="file" id="fileInput-rtt" accept=".csv,text/csv" multiple>
       </div>
     </div>
     <div class="btnrow shared-actions">
@@ -1688,7 +1696,7 @@
   const loadedFiles = []; // {filename, text, zone}
 
   function renderChips() {
-    ['client', 'server'].forEach(zone => {
+    ['client', 'server', 'rtt'].forEach(zone => {
       const el = document.getElementById('chips-' + zone);
       el.innerHTML = '';
       loadedFiles.filter(f => f.zone === zone).forEach(f => {
@@ -1737,7 +1745,7 @@
     });
   }
 
-  ['client', 'server'].forEach(zone => {
+  ['client', 'server', 'rtt'].forEach(zone => {
     const dropzone = document.getElementById('dropzone-' + zone);
     const fileInput = document.getElementById('fileInput-' + zone);
     fileInput.addEventListener('change', e => { addFiles(e.target.files, zone); fileInput.value = ''; });
@@ -1794,7 +1802,7 @@ ${sid2},client,-1,,,10485760,,4400,,roundrobin,false`;
         deliveryRows.push(`${sid},${p},${seq},${t},${chunkSize}`);
       }
     }
-    loadedFiles.push({ filename: 'sample-client-rtt.csv', text: rttRows.join('\n'), zone: 'client' });
+    loadedFiles.push({ filename: 'sample-client-rtt.csv', text: rttRows.join('\n'), zone: 'rtt' });
     loadedFiles.push({ filename: 'sample-server-delivery.csv', text: deliveryRows.join('\n'), zone: 'server' });
 
     // A third, -continuous-mode session (variable-size bursts, no
