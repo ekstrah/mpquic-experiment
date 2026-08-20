@@ -11,7 +11,9 @@
 set -euo pipefail
 
 # Self-elevate: ip/tc need root. Lets callers skip typing sudo themselves.
-[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
+# Resolved to an absolute path first -- sudo looks up a bare "$0" (e.g.
+# when invoked as "bash netem-client.sh") in PATH, not the current directory.
+[ "$(id -u)" -eq 0 ] || exec sudo "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" "$@"
 
 IFACE=enp131s0           # direct Ethernet link to the server, not WiFi
 PREFIX=24
