@@ -65,7 +65,7 @@
     box-sizing: border-box;
   }
   .viz-root * { box-sizing: border-box; }
-  .page { max-width: 1040px; margin: 0 auto; }
+  .page { max-width: 1200px; margin: 0 auto; }
   h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
   .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; line-height: 1.5; }
   code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
@@ -139,6 +139,8 @@
   @media (max-width: 620px) { .charts { grid-template-columns: 1fr; } }
   .chart-title { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; }
   .chart-wrap { position: relative; overflow-x: auto; }
+  .zoom-controls { display: flex; gap: 6px; margin-bottom: 8px; }
+  .zoom-btn { padding: 4px 10px; font-size: 12px; font-weight: 600; line-height: 1.2; }
   svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-muted); }
   .col { transition: filter .1s; cursor: pointer; }
   .col:hover, .col:focus { filter: brightness(1.12); outline: none; }
@@ -444,7 +446,7 @@
   function renderColumnChart(container, items, opts) {
     // items: [{label, value, color, sub}]
     const width = Math.max(280, container.clientWidth || 280);
-    const height = 200;
+    const height = 260;
     const padL = 40, padR = 12, padT = 14, padB = 34;
     const plotW = width - padL - padR, plotH = height - padT - padB;
     const maxVal = Math.max(1, ...items.map(d => d.value));
@@ -544,7 +546,7 @@
   // categories: [{label, sub, values:[v0,v1,...]}], seriesDefs: [{name,color}]
   function renderGroupedColumnChart(container, categories, seriesDefs, opts) {
     const width = Math.max(280, container.clientWidth || 280);
-    const height = 200;
+    const height = 260;
     const padL = 40, padR = 12, padT = 14, padB = 34;
     const plotW = width - padL - padR, plotH = height - padT - padB;
     const maxVal = Math.max(1, ...categories.flatMap(c => c.values));
@@ -631,7 +633,7 @@
   // series: [{name, color, points:[{x,y}], sub}], points sorted by x ascending.
   function renderLineChart(container, series, opts) {
     const width = Math.max(280, container.clientWidth || 280);
-    const height = 220;
+    const height = 320;
     const padL = 46, padR = 16, padT = 14, padB = 30;
     const plotW = width - padL - padR, plotH = height - padT - padB;
 
@@ -756,6 +758,53 @@
     container.appendChild(svg);
   }
 
+  // Same as renderLineChart, plus zoom in/out/reset buttons that narrow or
+  // widen the visible x-range -- useful on dense charts (RTT CDFs, delivery
+  // timelines) where the full range compresses interesting detail into a
+  // few pixels. Re-renders via renderLineChart's own xDomain option, so the
+  // zoomed view keeps the same crosshair/tooltip behavior.
+  function renderZoomableLineChart(container, series, opts) {
+    const allPoints = series.flatMap(s => s.points);
+    if (!allPoints.length) { renderLineChart(container, series, opts); return; }
+    const fullMin = opts.xDomain ? opts.xDomain[0] : Math.min(...allPoints.map(p => p.x));
+    const fullMax = opts.xDomain ? opts.xDomain[1] : Math.max(...allPoints.map(p => p.x));
+    let domain = [fullMin, fullMax];
+
+    const controls = document.createElement('div');
+    controls.className = 'zoom-controls';
+    const zoomInBtn = document.createElement('button');
+    zoomInBtn.type = 'button'; zoomInBtn.className = 'ghost zoom-btn'; zoomInBtn.textContent = '+ Zoom in';
+    const zoomOutBtn = document.createElement('button');
+    zoomOutBtn.type = 'button'; zoomOutBtn.className = 'ghost zoom-btn'; zoomOutBtn.textContent = '− Zoom out';
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button'; resetBtn.className = 'ghost zoom-btn'; resetBtn.textContent = 'Reset zoom';
+    controls.appendChild(zoomInBtn); controls.appendChild(zoomOutBtn); controls.appendChild(resetBtn);
+
+    const chartEl = document.createElement('div');
+
+    function redraw() {
+      renderLineChart(chartEl, series, Object.assign({}, opts, { xDomain: domain }));
+    }
+    function zoom(factor) {
+      const fullSpan = fullMax - fullMin || 1;
+      const center = (domain[0] + domain[1]) / 2;
+      const newSpan = Math.min(fullSpan, Math.max(fullSpan * 0.02, (domain[1] - domain[0]) * factor));
+      let lo = center - newSpan / 2, hi = center + newSpan / 2;
+      if (lo < fullMin) { hi += fullMin - lo; lo = fullMin; }
+      if (hi > fullMax) { lo -= hi - fullMax; hi = fullMax; }
+      domain = [Math.max(fullMin, lo), Math.min(fullMax, hi)];
+      redraw();
+    }
+    zoomInBtn.addEventListener('click', () => zoom(0.6));
+    zoomOutBtn.addEventListener('click', () => zoom(1 / 0.6));
+    resetBtn.addEventListener('click', () => { domain = [fullMin, fullMax]; redraw(); });
+
+    container.innerHTML = '';
+    container.appendChild(controls);
+    container.appendChild(chartEl);
+    redraw();
+  }
+
   function pathColor(pathIndex) { return SLOTS[pathIndex % SLOTS.length]; }
 
   // Builds one empirical-CDF step series per path from RTT samples. opts
@@ -862,7 +911,7 @@
       wrap.className = 'chart-wrap';
       cardEl.appendChild(wrap);
       const cdfSeries = computeRTTCDF(rtt);
-      renderLineChart(wrap, cdfSeries, {
+      renderZoomableLineChart(wrap, cdfSeries, {
         xTickFmt: v => v.toFixed(1) + 'ms',
         yTickFmt: v => v.toFixed(0) + '%',
         valueFmt: v => v.toFixed(0) + '%',
@@ -887,7 +936,7 @@
       const wrap1 = document.createElement('div');
       wrap1.className = 'chart-wrap';
       cardEl.appendChild(wrap1);
-      renderLineChart(wrap1, cumulative, {
+      renderZoomableLineChart(wrap1, cumulative, {
         xTickFmt: v => v.toFixed(1) + 's',
         yTickFmt: fmtBytes,
         valueFmt: fmtBytes,
@@ -907,7 +956,7 @@
       const wrap2 = document.createElement('div');
       wrap2.className = 'chart-wrap';
       cardEl.appendChild(wrap2);
-      renderLineChart(wrap2, rate, {
+      renderZoomableLineChart(wrap2, rate, {
         xTickFmt: v => v.toFixed(0) + 's',
         yTickFmt: v => v.toFixed(0) + ' Mbps',
         valueFmt: v => v.toFixed(1) + ' Mbps',
@@ -984,7 +1033,7 @@
     const wrap = document.createElement('div');
     wrap.className = 'chart-wrap';
     cardEl.appendChild(wrap);
-    renderLineChart(wrap, series, {
+    renderZoomableLineChart(wrap, series, {
       xTickFmt: v => v.toFixed(0) + 's',
       yTickFmt: fmtBytes,
       valueFmt: fmtBytes,
@@ -1017,7 +1066,7 @@
     const durationWrap = document.createElement('div');
     durationWrap.className = 'chart-wrap';
     cardEl.appendChild(durationWrap);
-    renderLineChart(durationWrap, durationSeries, {
+    renderZoomableLineChart(durationWrap, durationSeries, {
       xTickFmt: v => v.toFixed(0) + 's',
       yTickFmt: fmtMs,
       valueFmt: fmtMs,
@@ -1530,7 +1579,7 @@
       });
       allSeries.push(...series);
     });
-    renderLineChart(chartWrap, allSeries, {
+    renderZoomableLineChart(chartWrap, allSeries, {
       xTickFmt: v => v.toFixed(1) + 'ms',
       yTickFmt: v => v.toFixed(0) + '%',
       valueFmt: v => v.toFixed(0) + '%',
