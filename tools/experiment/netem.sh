@@ -6,20 +6,20 @@
 # client's egress and LTE's downlink delay goes on the server's egress;
 # the sum of both hosts' one-way delay is the modeled RTT contribution.
 #
-# Usage:
-#   sudo ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
-#   sudo ./tools/experiment/netem.sh clear <iface>
+# Usage (self-elevates via sudo if not already root):
+#   ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
+#   ./tools/experiment/netem.sh clear <iface>
 #
 # On the CLIENT: match-ip is one of the -local source IPs the client
 # dials from, matched as "src" -- each path's egress traffic genuinely
 # originates from a distinct IP there.
-#   sudo ./tools/experiment/netem.sh setup eth0 10.0.0.11 src lte uplink
+#   ./tools/experiment/netem.sh setup eth0 10.0.0.11 src lte uplink
 #
 # On the SERVER: the server listens on one wildcard address for every
 # path (see -listen in cmd/server), so its egress traffic all shares one
 # source IP -- what varies per path is which client IP it's replying to.
 # Match-ip is the client's path IP, matched as "dst":
-#   sudo ./tools/experiment/netem.sh setup eth0 10.0.0.11 dst lte downlink
+#   ./tools/experiment/netem.sh setup eth0 10.0.0.11 dst lte downlink
 #
 # Either way, match-ip must be aliased onto the client's interface first
 # if it isn't already a real address, e.g.:
@@ -31,6 +31,9 @@
 # (a timer loop re-running `tc qdisc change`) if handover behavior
 # specifically needs testing.
 set -euo pipefail
+
+# Self-elevate: ip/tc need root. Lets callers skip typing sudo themselves.
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
 
 lte_delay() { # $1=direction -> "avg jitter" (ms), from measured latency
   case "$1" in

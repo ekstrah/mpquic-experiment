@@ -5,11 +5,15 @@
 # which client path IP it's replying to, not its own source (see the
 # src/dst explanation at the top of netem.sh).
 # Edit IFACE/SERVER_IP/PATH0_IP/PATH1_IP below to match, then:
-#   sudo ./tools/experiment/netem-server.sh up
-#   sudo ./tools/experiment/netem-server.sh down
+#   ./tools/experiment/netem-server.sh up
+#   ./tools/experiment/netem-server.sh down
+# (self-elevates via sudo if not already root)
 #
 # After 'up', point the client at: -server <SERVER_IP>:4433
 set -euo pipefail
+
+# Self-elevate: ip/tc need root. Lets callers skip typing sudo themselves.
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
 
 IFACE=enp131s0           # direct Ethernet link to the client, not WiFi
 PREFIX=24

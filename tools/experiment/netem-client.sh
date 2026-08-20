@@ -2,12 +2,16 @@
 # Client-side path setup: aliases two path IPs onto this machine's
 # interface and applies LTE-like / LEO-like uplink shaping via netem.sh.
 # Edit IFACE/PATH0_IP/PATH1_IP below to match your machine, then:
-#   sudo ./tools/experiment/netem-client.sh up      # alias IPs + apply shaping
-#   sudo ./tools/experiment/netem-client.sh down    # remove shaping + aliases
+#   ./tools/experiment/netem-client.sh up      # alias IPs + apply shaping
+#   ./tools/experiment/netem-client.sh down    # remove shaping + aliases
+# (self-elevates via sudo if not already root)
 #
 # After 'up', dial the client with:
 #   ./bin/client -server <server-ip>:4433 -local <PATH0_IP>,<PATH1_IP> -continuous ...
 set -euo pipefail
+
+# Self-elevate: ip/tc need root. Lets callers skip typing sudo themselves.
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
 
 IFACE=enp131s0           # direct Ethernet link to the server, not WiFi
 PREFIX=24
