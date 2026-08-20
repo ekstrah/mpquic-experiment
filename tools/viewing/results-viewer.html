@@ -1630,10 +1630,10 @@
     const titleWrap = document.createElement('div');
     const title = document.createElement('div');
     title.className = 'run-title';
-    title.textContent = 'Continuous session';
+    title.textContent = labelFor(sid);
     const meta = document.createElement('div');
     meta.className = 'run-meta';
-    meta.textContent = 'session ' + sid.slice(0, 12) + (sid.length > 12 ? '…' : '');
+    meta.textContent = 'continuous session · ' + sid.slice(0, 12) + (sid.length > 12 ? '…' : '');
     titleWrap.appendChild(title); titleWrap.appendChild(meta);
     head.appendChild(titleWrap);
     cardEl.appendChild(head);
