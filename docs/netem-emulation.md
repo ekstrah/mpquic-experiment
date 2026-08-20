@@ -1,7 +1,7 @@
-# How `tools/netem.sh` mocks LTE/LEO link characteristics
+# How `tools/experiment/netem.sh` mocks LTE/LEO link characteristics
 
 Companion to [`link-characteristics.md`](link-characteristics.md) (the
-measured numbers) -- this explains the mechanism `tools/netem.sh` uses to
+measured numbers) -- this explains the mechanism `tools/experiment/netem.sh` uses to
 actually apply them via Linux `tc`/`netem`, real kernel-level packet
 shaping, not a simulation layered on top.
 
@@ -54,7 +54,7 @@ statistically-matched network conditions on the same wire.
 
 ## Where the numbers come from
 
-`tools/netem.sh` hardcodes one function per statistic
+`tools/experiment/netem.sh` hardcodes one function per statistic
 (`lte_delay`/`leo_delay`, `lte_loss`/`leo_loss`, `lte_rate`/`leo_rate`),
 pulled straight from `link-characteristics.md`. `lte_delay`/`leo_rate`
 take a direction argument because LTE latency and LEO capacity are
@@ -71,13 +71,13 @@ the paper reports those as symmetric.
 ## Usage
 
 ```sh
-sudo ./tools/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
-sudo ./tools/netem.sh clear <iface>
+sudo ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
+sudo ./tools/experiment/netem.sh clear <iface>
 ```
 
 In practice, use the wrapper scripts instead of calling this directly:
-`tools/netem-client.sh up`/`down` (aliases path IPs + applies `src`-based
-uplink shaping) and `tools/netem-server.sh up`/`down` (`dst`-based
+`tools/experiment/netem-client.sh up`/`down` (aliases path IPs + applies `src`-based
+uplink shaping) and `tools/experiment/netem-server.sh up`/`down` (`dst`-based
 downlink shaping). See `TODO.md` -> Link emulation / testbed for the
 current setup (a direct Ethernet link between two Ubuntu hosts).
 

@@ -93,15 +93,15 @@ with no dependency line can be picked up any time.
 
 ### Link emulation / testbed
 - [x] Built and verified working on two real Ubuntu hosts over a direct
-      Ethernet link (`tools/netem.sh`, `tools/netem-client.sh`,
-      `tools/netem-server.sh` — see `docs/netem-emulation.md` for the
+      Ethernet link (`tools/experiment/netem.sh`, `tools/experiment/netem-client.sh`,
+      `tools/experiment/netem-server.sh` — see `docs/netem-emulation.md` for the
       mechanism). IP-aliased path IPs on `enp131s0`, `tc`/`htb`/`netem`
       classifying by src (client, uplink) / dst (server, downlink),
       confirmed with `tc -s qdisc show` showing real packet counts
       flowing through the shaped LTE/LEO classes. Unblocks Dynamic
       multipath, Shared bottleneck, and CC/scheduler metric mismatch.
 - [ ] Time-varying delay / handover simulation: current shaping is static
-      for the whole run (see the `ponytail:` comment in `tools/netem.sh`).
+      for the whole run (see the `ponytail:` comment in `tools/experiment/netem.sh`).
       Two upgrade paths: (a) netem's `distribution pareto` for a
       heavier-tailed jitter shape, zero new code; (b) a companion script
       periodically running `tc qdisc change ... netem delay <new-value>`

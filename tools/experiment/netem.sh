@@ -7,19 +7,19 @@
 # the sum of both hosts' one-way delay is the modeled RTT contribution.
 #
 # Usage:
-#   sudo ./tools/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
-#   sudo ./tools/netem.sh clear <iface>
+#   sudo ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
+#   sudo ./tools/experiment/netem.sh clear <iface>
 #
 # On the CLIENT: match-ip is one of the -local source IPs the client
 # dials from, matched as "src" -- each path's egress traffic genuinely
 # originates from a distinct IP there.
-#   sudo ./tools/netem.sh setup eth0 10.0.0.11 src lte uplink
+#   sudo ./tools/experiment/netem.sh setup eth0 10.0.0.11 src lte uplink
 #
 # On the SERVER: the server listens on one wildcard address for every
 # path (see -listen in cmd/server), so its egress traffic all shares one
 # source IP -- what varies per path is which client IP it's replying to.
 # Match-ip is the client's path IP, matched as "dst":
-#   sudo ./tools/netem.sh setup eth0 10.0.0.11 dst lte downlink
+#   sudo ./tools/experiment/netem.sh setup eth0 10.0.0.11 dst lte downlink
 #
 # Either way, match-ip must be aliased onto the client's interface first
 # if it isn't already a real address, e.g.:

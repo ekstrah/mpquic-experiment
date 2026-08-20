@@ -70,7 +70,11 @@ cmd/
                           drains connections, writes results
 
 tools/
-  results-viewer.html     standalone (no build step) browser tool: drag in
+  experiment/             netem.sh + netem-client.sh/netem-server.sh (LTE/LEO
+                          link emulation) and run-client.sh/run-server.sh
+                          (paper's burst config, one scheduler per run)
+  viewing/
+    results-viewer.html   standalone (no build step) browser tool: drag in
                           the CSVs both binaries write, get charts. Detects
                           file type by CSV header content, not filename.
 ```
@@ -333,7 +337,7 @@ leaves both `-bursts.csv` files valid (not truncated mid-row):
 #        per burst, complete=true, chunks_corrupted=0, matching burst_ids
 ```
 
-`tools/results-viewer.html` is also useful during development: it has a
+`tools/viewing/results-viewer.html` is also useful during development: it has a
 "Load sample data" button that synthesizes a full session (including RTT
 and delivery timelines) without needing a real run, and — since it's a
 single static file with no build step — doubles as a quick way to eyeball

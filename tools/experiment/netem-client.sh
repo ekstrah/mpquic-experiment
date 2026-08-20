@@ -2,8 +2,8 @@
 # Client-side path setup: aliases two path IPs onto this machine's
 # interface and applies LTE-like / LEO-like uplink shaping via netem.sh.
 # Edit IFACE/PATH0_IP/PATH1_IP below to match your machine, then:
-#   sudo ./tools/netem-client.sh up      # alias IPs + apply shaping
-#   sudo ./tools/netem-client.sh down    # remove shaping + aliases
+#   sudo ./tools/experiment/netem-client.sh up      # alias IPs + apply shaping
+#   sudo ./tools/experiment/netem-client.sh down    # remove shaping + aliases
 #
 # After 'up', dial the client with:
 #   ./bin/client -server <server-ip>:4433 -local <PATH0_IP>,<PATH1_IP> -continuous ...

@@ -5,8 +5,8 @@
 # which client path IP it's replying to, not its own source (see the
 # src/dst explanation at the top of netem.sh).
 # Edit IFACE/SERVER_IP/PATH0_IP/PATH1_IP below to match, then:
-#   sudo ./tools/netem-server.sh up
-#   sudo ./tools/netem-server.sh down
+#   sudo ./tools/experiment/netem-server.sh up
+#   sudo ./tools/experiment/netem-server.sh down
 #
 # After 'up', point the client at: -server <SERVER_IP>:4433
 set -euo pipefail
