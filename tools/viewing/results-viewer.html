@@ -230,6 +230,19 @@
   // { burstID, bytesExpected, bytesReceived, chunks, corrupted, complete, startMs, endMs }
   // (from *-bursts.csv -- continuous-mode sessions only, see -continuous in README)
   const burstData = new Map();
+  // session_id -> human label, derived from the -out filename (e.g.
+  // "client-roundrobin-results.csv" -> "roundrobin") -- continuous-mode
+  // sessions have no scheduler column anywhere in their CSVs, so the
+  // filename (which run-client.sh/run-server.sh always set to
+  // "<role>-<scheduler>") is the only place that name survives to compare by.
+  const sessionLabel = new Map();
+  function labelSession(sid, filename) {
+    if (sessionLabel.has(sid)) return;
+    const base = filename.replace(/\.csv$/i, '')
+      .replace(/-(results|bursts|client-rtt|server-delivery)$/i, '')
+      .replace(/^(client|server)-/i, '');
+    sessionLabel.set(sid, base || sid.slice(0, 8));
+  }
 
   function parseCSV(text) {
     const rows = [];
@@ -261,13 +274,13 @@
     const rows = parseCSV(text);
     if (!rows.length) return;
     const header = rows[0].map(h => h.trim());
-    if (header.includes('latest_rtt_ms')) ingestRTT(rows, header);
-    else if (header.includes('burst_id')) ingestBurst(rows, header);
-    else if (header.includes('seq') && header.includes('bytes') && !header.includes('role')) ingestDelivery(rows, header);
+    if (header.includes('latest_rtt_ms')) ingestRTT(rows, header, filename);
+    else if (header.includes('burst_id')) ingestBurst(rows, header, filename);
+    else if (header.includes('seq') && header.includes('bytes') && !header.includes('role')) ingestDelivery(rows, header, filename);
     else ingestResults(rows, header, filename);
   }
 
-  function ingestRTT(rows, header) {
+  function ingestRTT(rows, header, filename) {
     const idx = name => header.indexOf(name);
     const iSession = idx('session_id'), iPath = idx('path_index'), iT = idx('t_ms'),
           iLatest = idx('latest_rtt_ms'), iSmoothed = idx('smoothed_rtt_ms');
@@ -276,6 +289,7 @@
       const row = rows[r];
       const sid = row[iSession];
       if (!sid) continue;
+      labelSession(sid, filename);
       if (!rttData.has(sid)) rttData.set(sid, []);
       rttData.get(sid).push({
         pathIndex: parseInt(row[iPath], 10) || 0,
@@ -286,7 +300,7 @@
     }
   }
 
-  function ingestDelivery(rows, header) {
+  function ingestDelivery(rows, header, filename) {
     const idx = name => header.indexOf(name);
     const iSession = idx('session_id'), iPath = idx('path_index'), iSeq = idx('seq'),
           iT = idx('t_ms'), iBytes = idx('bytes');
@@ -295,6 +309,7 @@
       const row = rows[r];
       const sid = row[iSession];
       if (!sid) continue;
+      labelSession(sid, filename);
       if (!deliveryData.has(sid)) deliveryData.set(sid, []);
       deliveryData.get(sid).push({
         pathIndex: parseInt(row[iPath], 10) || 0,
@@ -305,7 +320,7 @@
     }
   }
 
-  function ingestBurst(rows, header) {
+  function ingestBurst(rows, header, filename) {
     const idx = name => header.indexOf(name);
     const iSession = idx('session_id'), iRole = idx('role'), iBurst = idx('burst_id'),
           iPath = idx('path_index'),
@@ -317,6 +332,7 @@
       const row = rows[r];
       const sid = row[iSession];
       if (!sid) continue;
+      labelSession(sid, filename);
       const role = row[iRole] === 'server' ? 'server' : 'client';
       if (!burstData.has(sid)) burstData.set(sid, { client: [], server: [] });
       // path_index -1 (or absent, for CSVs from before this column existed)
@@ -349,6 +365,7 @@
       if (row.length < 2) continue;
       const sid = row[iSession];
       if (!sid) continue;
+      labelSession(sid, filename);
       const role = row[iRole] || '';
       const pathIndex = parseInt(row[iPath], 10);
       const key = sid + '#' + role;
@@ -741,8 +758,14 @@
 
   function pathColor(pathIndex) { return SLOTS[pathIndex % SLOTS.length]; }
 
-  // Builds one empirical-CDF step series per path from RTT samples.
-  function computeRTTCDF(samples) {
+  // Builds one empirical-CDF step series per path from RTT samples. opts
+  // lets a cross-run caller override the name (to prefix the run label) and
+  // color (to distinguish runs, not just paths) -- defaults match the
+  // original single-run behavior.
+  function computeRTTCDF(samples, opts) {
+    opts = opts || {};
+    const nameFor = opts.nameFor || (pathIndex => 'Path ' + pathIndex);
+    const colorFor = opts.colorFor || pathColor;
     const byPath = new Map();
     samples.forEach(s => {
       if (!byPath.has(s.pathIndex)) byPath.set(s.pathIndex, []);
@@ -760,7 +783,7 @@
         points.push({ x: v, y: pct });
         prevPct = pct;
       });
-      series.push({ name: 'Path ' + pathIndex, sub: n + ' samples', color: pathColor(pathIndex), points });
+      series.push({ name: nameFor(pathIndex), sub: n + ' samples', color: colorFor(pathIndex), points });
     });
     return series;
   }
@@ -1396,6 +1419,150 @@
     container.appendChild(wrap);
   }
 
+  // Prefers the authoritative scheduler name from a *-results.csv (one-shot
+  // mode) over the filename-derived guess (labelSession), since a run's
+  // actual -out prefix could in principle not match its scheduler name.
+  function labelFor(sid) {
+    for (const run of runs.values()) {
+      if (run.sid === sid && run.scheduler) return run.scheduler;
+    }
+    return sessionLabel.get(sid) || sid.slice(0, 8);
+  }
+
+  // Per-path achieved throughput for one session. Prefers *-results.csv
+  // (exact bytes/duration, one-shot mode); continuous-mode sessions have no
+  // such summary, so fall back to summing *-bursts.csv per-path rows over
+  // that path's active time span -- server rows are authoritative (actual
+  // goodput received), client rows (bytes successfully written) are the
+  // fallback when no server-side bursts.csv was loaded.
+  function computeAchievedRateRows(sid) {
+    const resultsRun = Array.from(runs.values()).find(r => r.sid === sid && r.role === 'server')
+      || Array.from(runs.values()).find(r => r.sid === sid && r.role === 'client');
+    if (resultsRun && resultsRun.paths.length) {
+      return resultsRun.paths
+        .map(p => ({ pathIndex: p.index, mbps: mbps(p.bytes, p.durationMs), source: resultsRun.role + ' results' }))
+        .sort((a, b) => a.pathIndex - b.pathIndex);
+    }
+    const bd = burstData.get(sid);
+    if (!bd) return [];
+    const useServer = bd.server && bd.server.length;
+    const rows = useServer ? bd.server : bd.client;
+    if (!rows || !rows.length) return [];
+    const byPath = new Map();
+    rows.filter(r => r.pathIndex >= 0).forEach(r => {
+      if (!byPath.has(r.pathIndex)) byPath.set(r.pathIndex, { bytes: 0, start: Infinity, end: -Infinity });
+      const acc = byPath.get(r.pathIndex);
+      acc.bytes += r.bytesReceived;
+      acc.start = Math.min(acc.start, r.startMs);
+      acc.end = Math.max(acc.end, r.endMs);
+    });
+    return Array.from(byPath.entries())
+      .map(([pathIndex, acc]) => ({ pathIndex, mbps: mbps(acc.bytes, acc.end - acc.start), source: useServer ? 'server bursts' : 'client bursts' }))
+      .sort((a, b) => a.pathIndex - b.pathIndex);
+  }
+
+  // Per-path min/avg/max latency for one session, from *-client-rtt.csv.
+  function computeLatencyRows(sid) {
+    const samples = rttData.get(sid);
+    if (!samples || !samples.length) return [];
+    const byPath = new Map();
+    samples.forEach(s => {
+      if (!byPath.has(s.pathIndex)) byPath.set(s.pathIndex, []);
+      byPath.get(s.pathIndex).push(s.latestRttMs);
+    });
+    return Array.from(byPath.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([pathIndex, vals]) => ({
+        pathIndex,
+        min: Math.min(...vals),
+        avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+        max: Math.max(...vals),
+        n: vals.length,
+      }));
+  }
+
+  function buildTable(headers, rows) {
+    const table = document.createElement('table');
+    table.className = 'rawtable';
+    const thead = document.createElement('thead');
+    const htr = document.createElement('tr');
+    headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; htr.appendChild(th); });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach(cells => {
+      const tr = document.createElement('tr');
+      cells.forEach(c => { const td = document.createElement('td'); td.textContent = c; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
+  // Cross-run RTT-CDF chart plus achieved-rate/latency tables, one row per
+  // run x path -- works for both one-shot and continuous-mode sessions
+  // (unlike renderComparison's throughput chart, which needs a *-results.csv
+  // and so only ever covers one-shot runs).
+  function renderCrossRunMetrics(container) {
+    const sessionEntries = Array.from(rttData.keys())
+      .map(sid => [sid, labelFor(sid)])
+      .sort((a, b) => a[1].localeCompare(b[1]));
+    if (sessionEntries.length < 2) return;
+
+    const wrap = document.createElement('div');
+    const title = document.createElement('div'); title.className = 'compare-title'; title.textContent = 'RTT comparison across runs';
+    const sub = document.createElement('div'); sub.className = 'compare-sub'; sub.textContent = 'Empirical CDF of per-ACK RTT samples, one series per run × path.';
+    wrap.appendChild(title); wrap.appendChild(sub);
+
+    const card = document.createElement('div');
+    card.className = 'run-card';
+    const chartWrap = document.createElement('div'); chartWrap.className = 'chart-wrap';
+    card.appendChild(chartWrap);
+
+    let colorIdx = 0;
+    const allSeries = [];
+    sessionEntries.forEach(([sid, label]) => {
+      const samples = rttData.get(sid);
+      if (!samples || !samples.length) return;
+      const series = computeRTTCDF(samples, {
+        nameFor: pathIndex => label + ' · path ' + pathIndex,
+        colorFor: () => SLOTS[colorIdx++ % SLOTS.length],
+      });
+      allSeries.push(...series);
+    });
+    renderLineChart(chartWrap, allSeries, {
+      xTickFmt: v => v.toFixed(1) + 'ms',
+      yTickFmt: v => v.toFixed(0) + '%',
+      valueFmt: v => v.toFixed(0) + '%',
+    });
+    renderLegendFor(card, allSeries);
+    wrap.appendChild(card);
+
+    const rateTitle = document.createElement('div'); rateTitle.className = 'compare-title'; rateTitle.textContent = 'Achieved data rate';
+    const rateSub = document.createElement('div'); rateSub.className = 'compare-sub'; rateSub.textContent = 'Per-path throughput, one row per run.';
+    wrap.appendChild(rateTitle); wrap.appendChild(rateSub);
+    const rateRows = [];
+    sessionEntries.forEach(([sid, label]) => {
+      computeAchievedRateRows(sid).forEach(r => {
+        rateRows.push([label, 'Path ' + r.pathIndex, r.mbps.toFixed(2) + ' Mbps', r.source]);
+      });
+    });
+    wrap.appendChild(buildTable(['Run', 'Path', 'Achieved rate', 'Source'], rateRows));
+
+    const latTitle = document.createElement('div'); latTitle.className = 'compare-title'; latTitle.textContent = 'Latency (RTT) summary';
+    const latSub = document.createElement('div'); latSub.className = 'compare-sub'; latSub.textContent = 'Per-path min / avg / max of per-ACK RTT samples, one row per run.';
+    wrap.appendChild(latTitle); wrap.appendChild(latSub);
+    const latRows = [];
+    sessionEntries.forEach(([sid, label]) => {
+      computeLatencyRows(sid).forEach(r => {
+        latRows.push([label, 'Path ' + r.pathIndex, r.min.toFixed(2) + ' ms', r.avg.toFixed(2) + ' ms', r.max.toFixed(2) + ' ms', String(r.n)]);
+      });
+    });
+    wrap.appendChild(buildTable(['Run', 'Path', 'Min', 'Avg', 'Max', 'Samples'], latRows));
+
+    container.appendChild(wrap);
+  }
+
   // Renders a session that has no *-results.csv at all -- continuous mode
   // (-continuous) never writes one, since there's no single "the end" to
   // finalize a summary at. Just the burst timeline and/or RTT/delivery
@@ -1463,6 +1630,7 @@
       .map(sid => { const pair = bySession.get(sid); return pair ? [sid, pair.server || pair.client] : null; })
       .filter(Boolean);
     renderComparison(content, reps);
+    renderCrossRunMetrics(content);
   }
 
   // loadedFiles is the source of truth for what's on the page; `runs` is
@@ -1499,6 +1667,7 @@
     rttData.clear();
     deliveryData.clear();
     burstData.clear();
+    sessionLabel.clear();
     loadedFiles.forEach(f => ingest(f.text, f.filename));
     renderAll();
     renderChips();
