@@ -65,7 +65,7 @@
     box-sizing: border-box;
   }
   .viz-root * { box-sizing: border-box; }
-  .page { max-width: 1200px; margin: 0 auto; }
+  .page { max-width: 1600px; margin: 0 auto; }
   h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
   .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; line-height: 1.5; }
   code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
@@ -149,6 +149,10 @@
 
   .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
   .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-secondary); }
+  .legend-item.toggle { cursor: pointer; user-select: none; border-radius: 4px; padding: 2px 4px; margin: -2px -4px; }
+  .legend-item.toggle:hover { background: var(--surface-2); }
+  .legend-item.toggle:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+  .legend-item.toggle.off { opacity: 0.4; text-decoration: line-through; }
   .legend-swatch { width: 9px; height: 9px; border-radius: 2.5px; flex: none; }
 
   .tooltip {
@@ -902,18 +906,41 @@
     return { cumulative, rate };
   }
 
-  function renderLegendFor(cardEl, seriesList) {
-    const legend = document.createElement('div');
-    legend.className = 'legend';
+  // Renders a zoomable line chart plus a legend whose entries toggle that
+  // series' visibility on click -- lets you isolate a run/path in a busy
+  // multi-series chart (e.g. the cross-run RTT comparison) instead of only
+  // being able to hide it by re-uploading fewer files. Toggling redraws the
+  // chart, which resets zoom to the full range (renderZoomableLineChart's
+  // zoom-domain state lives inside its own closure and doesn't survive a
+  // fresh call).
+  function renderInteractiveLineChart(chartEl, legendEl, series, opts) {
+    const hidden = new Set();
+    function redraw() {
+      renderZoomableLineChart(chartEl, series.filter(s => !hidden.has(s.name)), opts);
+      renderToggleLegend(legendEl, series, hidden, redraw);
+    }
+    redraw();
+  }
+
+  function renderToggleLegend(legendEl, seriesList, hidden, onToggle) {
+    legendEl.innerHTML = '';
+    legendEl.className = 'legend';
     seriesList.forEach(s => {
       const item = document.createElement('div');
-      item.className = 'legend-item';
+      item.className = 'legend-item toggle' + (hidden.has(s.name) ? ' off' : '');
+      item.tabIndex = 0;
+      item.setAttribute('role', 'button');
       const sw = document.createElement('span'); sw.className = 'legend-swatch'; sw.style.background = s.color;
       item.appendChild(sw);
       item.appendChild(document.createTextNode(s.name + (s.sub ? ' · ' + s.sub : '')));
-      legend.appendChild(item);
+      const toggle = () => {
+        if (hidden.has(s.name)) hidden.delete(s.name); else hidden.add(s.name);
+        onToggle();
+      };
+      item.addEventListener('click', toggle);
+      item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+      legendEl.appendChild(item);
     });
-    cardEl.appendChild(legend);
   }
 
   // Appends the RTT-CDF and/or delivery-timeline charts for a session, if
@@ -934,13 +961,14 @@
       const wrap = document.createElement('div');
       wrap.className = 'chart-wrap';
       cardEl.appendChild(wrap);
+      const legend = document.createElement('div');
+      cardEl.appendChild(legend);
       const cdfSeries = computeRTTCDF(rtt);
-      renderZoomableLineChart(wrap, cdfSeries, {
+      renderInteractiveLineChart(wrap, legend, cdfSeries, {
         xTickFmt: v => v.toFixed(1) + 'ms',
         yTickFmt: v => v.toFixed(0) + '%',
         valueFmt: v => v.toFixed(0) + '%',
       });
-      renderLegendFor(cardEl, cdfSeries);
     }
 
     const delivery = deliveryData.get(sid);
@@ -960,12 +988,13 @@
       const wrap1 = document.createElement('div');
       wrap1.className = 'chart-wrap';
       cardEl.appendChild(wrap1);
-      renderZoomableLineChart(wrap1, cumulative, {
+      const legend1 = document.createElement('div');
+      cardEl.appendChild(legend1);
+      renderInteractiveLineChart(wrap1, legend1, cumulative, {
         xTickFmt: v => v.toFixed(1) + 's',
         yTickFmt: fmtBytes,
         valueFmt: fmtBytes,
       });
-      renderLegendFor(cardEl, cumulative);
 
       const title2 = document.createElement('div');
       title2.className = 'compare-title';
@@ -980,12 +1009,13 @@
       const wrap2 = document.createElement('div');
       wrap2.className = 'chart-wrap';
       cardEl.appendChild(wrap2);
-      renderZoomableLineChart(wrap2, rate, {
+      const legend2 = document.createElement('div');
+      cardEl.appendChild(legend2);
+      renderInteractiveLineChart(wrap2, legend2, rate, {
         xTickFmt: v => v.toFixed(0) + 's',
         yTickFmt: v => v.toFixed(0) + ' Mbps',
         valueFmt: v => v.toFixed(1) + ' Mbps',
       });
-      renderLegendFor(cardEl, rate);
     }
   }
 
@@ -1057,12 +1087,13 @@
     const wrap = document.createElement('div');
     wrap.className = 'chart-wrap';
     cardEl.appendChild(wrap);
-    renderZoomableLineChart(wrap, series, {
+    const legend = document.createElement('div');
+    cardEl.appendChild(legend);
+    renderInteractiveLineChart(wrap, legend, series, {
       xTickFmt: v => v.toFixed(0) + 's',
       yTickFmt: fmtBytes,
       valueFmt: fmtBytes,
     });
-    renderLegendFor(cardEl, series);
 
     // Burst size is a client-chosen constant in CBR mode (-burst-min-size
     // == -burst-max-size) -- it never reflects network conditions. Delivery
@@ -1090,12 +1121,13 @@
     const durationWrap = document.createElement('div');
     durationWrap.className = 'chart-wrap';
     cardEl.appendChild(durationWrap);
-    renderZoomableLineChart(durationWrap, durationSeries, {
+    const durationLegend = document.createElement('div');
+    cardEl.appendChild(durationLegend);
+    renderInteractiveLineChart(durationWrap, durationLegend, durationSeries, {
       xTickFmt: v => v.toFixed(0) + 's',
       yTickFmt: fmtMs,
       valueFmt: fmtMs,
     });
-    renderLegendFor(cardEl, durationSeries);
 
     const details = document.createElement('details');
     details.className = 'tv';
@@ -1603,12 +1635,13 @@
       });
       allSeries.push(...series);
     });
-    renderZoomableLineChart(chartWrap, allSeries, {
+    const legend = document.createElement('div');
+    renderInteractiveLineChart(chartWrap, legend, allSeries, {
       xTickFmt: v => v.toFixed(1) + 'ms',
       yTickFmt: v => v.toFixed(0) + '%',
       valueFmt: v => v.toFixed(0) + '%',
     });
-    renderLegendFor(card, allSeries);
+    card.appendChild(legend);
     wrap.appendChild(card);
 
     const rateTitle = document.createElement('div'); rateTitle.className = 'compare-title'; rateTitle.textContent = 'Achieved data rate';
