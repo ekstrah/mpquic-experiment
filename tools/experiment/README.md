@@ -94,6 +94,28 @@ directory. Copy them to your local machine, then open
 `../viewing/results-viewer.html` in a browser (or serve it locally --
 see that file's own in-page instructions) and drag the CSVs in.
 
+## Interpreting results: `redundant`'s "dominant path" chart
+
+The viewer's "Dominant path per burst" chart (which path delivered the
+most bytes for each burst) will show **path 0 (mesh) as dominant under
+`redundant`, even though `redundant` sends every chunk on every path.**
+This is not evidence redundant "only used" mesh -- it's an artifact of
+how the server counts bytes: `BurstTracker.Write` (`internal/transfer/burst.go:75-79`)
+dedups by chunk sequence number, so only the *first* arrival of a given
+chunk gets credited to a path; every later duplicate of that same chunk
+(from the other two paths, which genuinely sent and delivered it too)
+gets zero credit. Since mesh has the lowest RTT and highest capacity in
+the flight scenario, it wins that per-chunk arrival race almost every
+time -- so it looks fully dominant in this chart, while private-5G and
+satellite are still doing real, expensive work pushing the full
+duplicated stream through their much smaller capacity (which is part of
+why `redundant` runs are slow overall: `drainPaths()` still waits for
+all three connections to fully drain, regardless of byte credit).
+
+`roundrobin`'s even split and `rtt-aware`'s path-0 concentration in this
+same chart *do* reflect actual scheduler chunk-placement decisions --
+only `redundant`'s reading needs this caveat.
+
 ## Scripts reference
 
 | Script | Role |
