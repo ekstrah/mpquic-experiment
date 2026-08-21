@@ -418,6 +418,22 @@
     if (ms >= 1000) return (ms / 1000).toFixed(2) + ' s';
     return ms + ' ms';
   }
+  // Math.min(...arr)/Math.max(...arr) spreads every element into a function
+  // call, which overflows the call stack once arr is big enough (a
+  // -continuous run's per-ACK RTT log routinely has tens of thousands of
+  // samples, more once several runs' worth are merged for cross-run
+  // comparison). These reduce over the array instead, so there's no
+  // argument-count limit regardless of input size.
+  function arrMin(arr) {
+    let m = Infinity;
+    for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+    return m;
+  }
+  function arrMax(arr) {
+    let m = -Infinity;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+    return m;
+  }
   function niceStep(max) {
     if (max <= 0) return 1;
     const rough = max / 4;
@@ -647,9 +663,9 @@
 
     const allPoints = series.flatMap(s => s.points);
     if (!allPoints.length) { container.innerHTML = '<div class="empty" style="padding:30px 0">no data</div>'; return; }
-    const xMin = opts.xDomain ? opts.xDomain[0] : Math.min(...allPoints.map(p => p.x));
-    const xMax = opts.xDomain ? opts.xDomain[1] : Math.max(...allPoints.map(p => p.x));
-    const yMaxRaw = Math.max(1, ...allPoints.map(p => p.y));
+    const xMin = opts.xDomain ? opts.xDomain[0] : arrMin(allPoints.map(p => p.x));
+    const xMax = opts.xDomain ? opts.xDomain[1] : arrMax(allPoints.map(p => p.x));
+    const yMaxRaw = Math.max(1, arrMax(allPoints.map(p => p.y)));
     const yStep = niceStep(yMaxRaw);
     const yMax = Math.ceil(yMaxRaw / yStep) * yStep || yStep;
     const xSpan = (xMax - xMin) || 1;
@@ -774,8 +790,8 @@
   function renderZoomableLineChart(container, series, opts) {
     const allPoints = series.flatMap(s => s.points);
     if (!allPoints.length) { renderLineChart(container, series, opts); return; }
-    const fullMin = opts.xDomain ? opts.xDomain[0] : Math.min(...allPoints.map(p => p.x));
-    const fullMax = opts.xDomain ? opts.xDomain[1] : Math.max(...allPoints.map(p => p.x));
+    const fullMin = opts.xDomain ? opts.xDomain[0] : arrMin(allPoints.map(p => p.x));
+    const fullMax = opts.xDomain ? opts.xDomain[1] : arrMax(allPoints.map(p => p.x));
     let domain = [fullMin, fullMax];
 
     const controls = document.createElement('div');
@@ -854,7 +870,7 @@
       byPath.get(s.pathIndex).push(s);
     });
     const pathIndices = Array.from(byPath.keys()).sort((a, b) => a - b);
-    const maxTMs = Math.max(0, ...samples.map(s => s.tMs));
+    const maxTMs = Math.max(0, arrMax(samples.map(s => s.tMs)));
     const maxBucket = Math.ceil(maxTMs / 1000);
 
     const cumulative = [];
@@ -1531,9 +1547,9 @@
       .sort((a, b) => a[0] - b[0])
       .map(([pathIndex, vals]) => ({
         pathIndex,
-        min: Math.min(...vals),
+        min: arrMin(vals),
         avg: vals.reduce((a, b) => a + b, 0) / vals.length,
-        max: Math.max(...vals),
+        max: arrMax(vals),
         n: vals.length,
       }));
   }
