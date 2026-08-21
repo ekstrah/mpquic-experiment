@@ -1492,12 +1492,17 @@
   function renderComparison(container, sortedRuns) {
     if (sortedRuns.length < 2) return;
     const wrap = document.createElement('div');
+    // Attach before populating -- see the matching comment in renderAll:
+    // clientWidth reads 0 on a detached node, so the chart below needs
+    // wrap (and everything inside it) connected to the document first.
+    container.appendChild(wrap);
     const title = document.createElement('div'); title.className = 'compare-title'; title.textContent = 'Run comparison';
     const sub = document.createElement('div'); sub.className = 'compare-sub'; sub.textContent = 'Aggregate throughput across all loaded runs.';
     wrap.appendChild(title); wrap.appendChild(sub);
 
     const card = document.createElement('div');
     card.className = 'run-card';
+    wrap.appendChild(card);
     const chartWrap = document.createElement('div'); chartWrap.className = 'chart-wrap';
     card.appendChild(chartWrap);
 
@@ -1520,8 +1525,6 @@
       legend.appendChild(item);
     });
     card.appendChild(legend);
-    wrap.appendChild(card);
-    container.appendChild(wrap);
   }
 
   // Prefers the authoritative scheduler name from a *-results.csv (one-shot
@@ -1615,12 +1618,17 @@
     if (sessionEntries.length < 2) return;
 
     const wrap = document.createElement('div');
+    // Attach before populating -- see the matching comment in renderAll:
+    // clientWidth reads 0 on a detached node, so the chart below needs
+    // wrap (and everything inside it) connected to the document first.
+    container.appendChild(wrap);
     const title = document.createElement('div'); title.className = 'compare-title'; title.textContent = 'RTT comparison across runs';
     const sub = document.createElement('div'); sub.className = 'compare-sub'; sub.textContent = 'Empirical CDF of per-ACK RTT samples, one series per run × path.';
     wrap.appendChild(title); wrap.appendChild(sub);
 
     const card = document.createElement('div');
     card.className = 'run-card';
+    wrap.appendChild(card);
     const chartWrap = document.createElement('div'); chartWrap.className = 'chart-wrap';
     card.appendChild(chartWrap);
 
@@ -1642,7 +1650,6 @@
       valueFmt: v => v.toFixed(0) + '%',
     });
     card.appendChild(legend);
-    wrap.appendChild(card);
 
     const rateTitle = document.createElement('div'); rateTitle.className = 'compare-title'; rateTitle.textContent = 'Achieved data rate';
     const rateSub = document.createElement('div'); rateSub.className = 'compare-sub'; rateSub.textContent = 'Per-path throughput, one row per run.';
@@ -1665,8 +1672,6 @@
       });
     });
     wrap.appendChild(buildTable(['Run', 'Path', 'Min', 'Avg', 'Max', 'Samples'], latRows));
-
-    container.appendChild(wrap);
   }
 
   // Renders a session that has no *-results.csv at all -- continuous mode
@@ -1718,6 +1723,11 @@
       const pair = bySession.get(sid) || {};
       const card = document.createElement('div');
       card.className = 'run-card';
+      // Attach before populating: every chart in here measures its
+      // container's clientWidth to size its SVG, which reads 0 on a
+      // detached node -- appending first means the charts see the real
+      // layout width instead of silently falling back to their 280px min.
+      content.appendChild(card);
       if (pair.client && pair.server) {
         renderPairedRun(sid, pair.client, pair.server, card);
       } else if (pair.client || pair.server) {
@@ -1725,7 +1735,6 @@
       } else {
         renderContinuousSession(sid, card);
       }
-      content.appendChild(card);
     });
 
     // One representative entry per session that has a *-results.csv
