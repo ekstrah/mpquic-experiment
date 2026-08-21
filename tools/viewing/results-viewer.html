@@ -835,6 +835,102 @@
 
   function pathColor(pathIndex) { return SLOTS[pathIndex % SLOTS.length]; }
 
+  // Renders a categorical scatter: one row per path index, one dot per
+  // point at that path's row, positioned along a shared time x-axis.
+  // Modeled on Figure 5 ("Dominant communication link over time") in the
+  // Baltaci et al. 2026 UAV measurement paper -- points: [{x, pathIndex}].
+  function renderPathScatterChart(container, points, opts) {
+    if (!points.length) { container.innerHTML = '<div class="empty" style="padding:30px 0">no data</div>'; return; }
+    const pathIndices = Array.from(new Set(points.map(p => p.pathIndex))).sort((a, b) => a - b);
+    const rowOf = new Map(pathIndices.map((p, i) => [p, i]));
+
+    const width = Math.max(280, container.clientWidth || 280);
+    const rowH = 32;
+    const height = pathIndices.length * rowH + 40;
+    const padL = 84, padR = 16, padT = 10, padB = 30;
+    const plotW = width - padL - padR, plotH = height - padT - padB;
+
+    const xs = points.map(p => p.x);
+    const xMin = arrMin(xs), xMax = arrMax(xs);
+    const xSpan = (xMax - xMin) || 1;
+    const xScale = x => padL + ((x - xMin) / xSpan) * plotW;
+    const yScale = pathIndex => padT + (rowOf.get(pathIndex) + 0.5) * (plotH / pathIndices.length);
+
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', height);
+
+    pathIndices.forEach(pathIndex => {
+      const y = yScale(pathIndex);
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', padL); line.setAttribute('x2', width - padR);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      line.setAttribute('stroke', 'var(--grid)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+      const t = document.createElementNS(svgNS, 'text');
+      t.setAttribute('x', padL - 10); t.setAttribute('y', y + 3);
+      t.setAttribute('text-anchor', 'end');
+      t.setAttribute('class', 'ytick');
+      t.textContent = (opts.labelFor || (p => 'Path ' + p))(pathIndex);
+      svg.appendChild(t);
+    });
+
+    const xTickCount = 5;
+    for (let i = 0; i <= xTickCount; i++) {
+      const v = xMin + (xSpan * i) / xTickCount;
+      const t = document.createElementNS(svgNS, 'text');
+      t.setAttribute('x', xScale(v)); t.setAttribute('y', padT + plotH + 18);
+      t.setAttribute('text-anchor', i === 0 ? 'start' : i === xTickCount ? 'end' : 'middle');
+      t.setAttribute('class', 'axislabel');
+      t.textContent = opts.xTickFmt(v);
+      svg.appendChild(t);
+    }
+
+    points.forEach(p => {
+      const cx = xScale(p.x), cy = yScale(p.pathIndex);
+      const dot = document.createElementNS(svgNS, 'circle');
+      dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
+      dot.setAttribute('r', '3.5');
+      dot.setAttribute('fill', opts.colorFor(p.pathIndex));
+      dot.setAttribute('class', 'col');
+      dot.setAttribute('tabindex', '0');
+      const label = (opts.labelFor || (pi => 'Path ' + pi))(p.pathIndex);
+      const show = evt => showTooltip(evt.clientX, evt.clientY, [{ color: opts.colorFor(p.pathIndex), value: opts.xTickFmt(p.x), label }]);
+      dot.addEventListener('pointerenter', show);
+      dot.addEventListener('pointermove', show);
+      dot.addEventListener('pointerleave', hideTooltip);
+      dot.addEventListener('focus', () => show({ clientX: cx, clientY: cy }));
+      dot.addEventListener('blur', hideTooltip);
+      svg.appendChild(dot);
+    });
+
+    container.innerHTML = '';
+    container.appendChild(svg);
+  }
+
+  // For each burst, finds which path delivered the most bytes -- the
+  // "dominant" path for that burst, mirroring Figure 5's dominant-link
+  // analysis in the Baltaci et al. 2026 UAV measurement paper. rows must
+  // already be the per-path breakdown (pathIndex >= 0), not the -1
+  // aggregate.
+  function computeDominantPathPerBurst(rows) {
+    const byBurst = new Map();
+    rows.forEach(b => {
+      if (b.pathIndex < 0) return;
+      if (!byBurst.has(b.burstID)) byBurst.set(b.burstID, { startMs: b.startMs, best: null, bestBytes: -1 });
+      const acc = byBurst.get(b.burstID);
+      acc.startMs = Math.min(acc.startMs, b.startMs);
+      if (b.bytesReceived > acc.bestBytes) { acc.bestBytes = b.bytesReceived; acc.best = b.pathIndex; }
+    });
+    return Array.from(byBurst.values())
+      .filter(v => v.best !== null)
+      .sort((a, b) => a.startMs - b.startMs)
+      .map(v => ({ x: v.startMs / 1000, pathIndex: v.best }));
+  }
+
   // Builds one empirical-CDF step series per path from RTT samples. opts
   // lets a cross-run caller override the name (to prefix the run label) and
   // color (to distinguish runs, not just paths) -- defaults match the
@@ -1128,6 +1224,34 @@
       yTickFmt: fmtMs,
       valueFmt: fmtMs,
     });
+
+    // Per-path breakdown rows (pathIndex >= 0) exist alongside the -1
+    // aggregate used above, but were otherwise only visible in the raw
+    // Table view -- this surfaces which path actually carried each burst.
+    const perPathRows = {
+      client: bd.client.filter(b => b.pathIndex >= 0),
+      server: bd.server.filter(b => b.pathIndex >= 0),
+    };
+    const dominantRows = perPathRows.server.length ? perPathRows.server : perPathRows.client;
+    if (dominantRows.length) {
+      const dominantTitle = document.createElement('div');
+      dominantTitle.className = 'chart-title';
+      dominantTitle.style.margin = '16px 0 4px';
+      dominantTitle.textContent = 'Dominant path per burst';
+      cardEl.appendChild(dominantTitle);
+      const dominantSub = document.createElement('div');
+      dominantSub.className = 'compare-sub';
+      dominantSub.style.marginBottom = '10px';
+      dominantSub.textContent = 'Which path delivered the most bytes for each burst, over time.';
+      cardEl.appendChild(dominantSub);
+      const dominantWrap = document.createElement('div');
+      dominantWrap.className = 'chart-wrap';
+      cardEl.appendChild(dominantWrap);
+      renderPathScatterChart(dominantWrap, computeDominantPathPerBurst(dominantRows), {
+        colorFor: pathColor,
+        xTickFmt: v => v.toFixed(0) + 's',
+      });
+    }
 
     const details = document.createElement('details');
     details.className = 'tv';
