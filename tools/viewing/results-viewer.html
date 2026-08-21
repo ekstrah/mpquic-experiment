@@ -1570,8 +1570,10 @@
   }
 
   // Per-path min/avg/max latency for one session, from *-client-rtt.csv.
-  function computeLatencyRows(sid) {
-    const samples = rttData.get(sid);
+  // samplesOverride lets the cross-run comparison feed in its per-path
+  // sample-count-matched subset instead of the session's full log.
+  function computeLatencyRows(sid, samplesOverride) {
+    const samples = samplesOverride || rttData.get(sid);
     if (!samples || !samples.length) return [];
     const byPath = new Map();
     samples.forEach(s => {
@@ -1607,6 +1609,46 @@
     return table;
   }
 
+  // Crops every session's RTT samples, per path, down to the smallest
+  // sample count seen for that path across the sessions being compared.
+  // Runs of different lengths (e.g. -continuous sessions stopped at
+  // different times) otherwise collect different sample counts, which
+  // would make one scheduler's CDF/latency stats look smoother or more
+  // precise than another's just from having logged more samples -- this
+  // keeps the cross-run comparison apples-to-apples. Cropping keeps each
+  // path's earliest N samples (chronological order) and drops the rest.
+  function cropToMinSamplesPerPath(sessionEntries) {
+    const minByPath = new Map(); // pathIndex -> smallest count seen
+    sessionEntries.forEach(([sid]) => {
+      const samples = rttData.get(sid);
+      if (!samples || !samples.length) return;
+      const countByPath = new Map();
+      samples.forEach(s => countByPath.set(s.pathIndex, (countByPath.get(s.pathIndex) || 0) + 1));
+      countByPath.forEach((count, pathIndex) => {
+        const prev = minByPath.get(pathIndex);
+        minByPath.set(pathIndex, prev === undefined ? count : Math.min(prev, count));
+      });
+    });
+
+    const cropped = new Map(); // sid -> cropped sample array
+    sessionEntries.forEach(([sid]) => {
+      const samples = rttData.get(sid);
+      if (!samples || !samples.length) { cropped.set(sid, []); return; }
+      const byPath = new Map();
+      samples.forEach(s => {
+        if (!byPath.has(s.pathIndex)) byPath.set(s.pathIndex, []);
+        byPath.get(s.pathIndex).push(s);
+      });
+      const out = [];
+      byPath.forEach((list, pathIndex) => {
+        list.sort((a, b) => a.tMs - b.tMs);
+        out.push(...list.slice(0, minByPath.get(pathIndex)));
+      });
+      cropped.set(sid, out);
+    });
+    return cropped;
+  }
+
   // Cross-run RTT-CDF chart plus achieved-rate/latency tables, one row per
   // run x path -- works for both one-shot and continuous-mode sessions
   // (unlike renderComparison's throughput chart, which needs a *-results.csv
@@ -1623,7 +1665,7 @@
     // wrap (and everything inside it) connected to the document first.
     container.appendChild(wrap);
     const title = document.createElement('div'); title.className = 'compare-title'; title.textContent = 'RTT comparison across runs';
-    const sub = document.createElement('div'); sub.className = 'compare-sub'; sub.textContent = 'Empirical CDF of per-ACK RTT samples, one series per run × path.';
+    const sub = document.createElement('div'); sub.className = 'compare-sub'; sub.textContent = 'Empirical CDF of per-ACK RTT samples, one series per run × path -- cropped to the smallest sample count seen for that path, so no run’s curve is smoother just from logging more samples.';
     wrap.appendChild(title); wrap.appendChild(sub);
 
     const card = document.createElement('div');
@@ -1632,10 +1674,12 @@
     const chartWrap = document.createElement('div'); chartWrap.className = 'chart-wrap';
     card.appendChild(chartWrap);
 
+    const croppedSamples = cropToMinSamplesPerPath(sessionEntries);
+
     let colorIdx = 0;
     const allSeries = [];
     sessionEntries.forEach(([sid, label]) => {
-      const samples = rttData.get(sid);
+      const samples = croppedSamples.get(sid);
       if (!samples || !samples.length) return;
       const series = computeRTTCDF(samples, {
         nameFor: pathIndex => label + ' · path ' + pathIndex,
@@ -1663,11 +1707,11 @@
     wrap.appendChild(buildTable(['Run', 'Path', 'Achieved rate', 'Source'], rateRows));
 
     const latTitle = document.createElement('div'); latTitle.className = 'compare-title'; latTitle.textContent = 'Latency (RTT) summary';
-    const latSub = document.createElement('div'); latSub.className = 'compare-sub'; latSub.textContent = 'Per-path min / avg / max of per-ACK RTT samples, one row per run.';
+    const latSub = document.createElement('div'); latSub.className = 'compare-sub'; latSub.textContent = 'Per-path min / avg / max of per-ACK RTT samples, one row per run -- same cropped sample set as the CDF chart above.';
     wrap.appendChild(latTitle); wrap.appendChild(latSub);
     const latRows = [];
     sessionEntries.forEach(([sid, label]) => {
-      computeLatencyRows(sid).forEach(r => {
+      computeLatencyRows(sid, croppedSamples.get(sid)).forEach(r => {
         latRows.push([label, 'Path ' + r.pathIndex, r.min.toFixed(2) + ' ms', r.avg.toFixed(2) + ' ms', r.max.toFixed(2) + ' ms', String(r.n)]);
       });
     });
