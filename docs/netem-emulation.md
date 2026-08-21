@@ -1,9 +1,13 @@
-# How `tools/experiment/netem.sh` mocks LTE/LEO link characteristics
+# How `tools/experiment/netem.sh` mocks link characteristics
 
 Companion to [`link-characteristics.md`](link-characteristics.md) (the
-measured numbers) -- this explains the mechanism `tools/experiment/netem.sh` uses to
-actually apply them via Linux `tc`/`netem`, real kernel-level packet
-shaping, not a simulation layered on top.
+measured numbers, for both the trace-emulated LTE/LEO scenario and the
+flight-measured aerial-mesh/private-5G/satellite scenario) -- this
+explains the mechanism `tools/experiment/netem.sh` uses to actually apply
+them via Linux `tc`/`netem`, real kernel-level packet shaping, not a
+simulation layered on top. That "real shaping" point holds equally for
+both scenarios -- what differs between them is only where their source
+numbers came from, not how `netem.sh` applies either one.
 
 ## The three-step tc tree
 
@@ -55,11 +59,13 @@ statistically-matched network conditions on the same wire.
 ## Where the numbers come from
 
 `tools/experiment/netem.sh` hardcodes one function per statistic
-(`lte_delay`/`leo_delay`, `lte_loss`/`leo_loss`, `lte_rate`/`leo_rate`),
-pulled straight from `link-characteristics.md`. `lte_delay`/`leo_rate`
-take a direction argument because LTE latency and LEO capacity are
-asymmetric (uplink != downlink); `leo_delay`/`lte_loss` don't, because
-the paper reports those as symmetric.
+(`lte_delay`/`leo_delay`/`mesh_delay`/`p5g_delay`/`sat_delay`, matching
+`_loss`/`_rate` functions), pulled straight from `link-characteristics.md`.
+`lte_delay`/`leo_rate` take a direction argument because LTE latency and
+LEO capacity are asymmetric (uplink != downlink); the others don't, either
+because the source paper reports them as symmetric (`leo_delay`/`lte_loss`)
+or because the flight-measured paper's Table I doesn't split by direction
+at all (`mesh`/`p5g`/`sat`).
 
 | Profile | Direction | Delay | Loss | Rate |
 |---|---|---|---|---|
@@ -67,18 +73,34 @@ the paper reports those as symmetric.
 | LTE | downlink | 45ms +-18ms | 0.006% | 30mbit |
 | LEO | uplink | 25ms +-13ms | 0.17% | 18mbit |
 | LEO | downlink | 25ms +-13ms | 0.17% | 62mbit |
+| mesh | either | 2.5ms +-0ms | 0% | 30mbit |
+| p5g | either | 15ms +-0ms | 0% | 5mbit |
+| sat | either | 87.5ms +-12.5ms | 0% | 5mbit |
+
+mesh/p5g/sat delay is half of Table I's reported RTT (one-way, to match
+this script's existing "sum of both hosts' one-way delay = modeled RTT"
+convention); jitter and loss are 0 wherever Table I doesn't report a
+range or a loss figure, rather than inventing one -- see the `ponytail:`
+comment in `netem.sh` for the exact reasoning per profile.
 
 ## Usage
 
 ```sh
-sudo ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
+sudo ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo|mesh|p5g|sat> <uplink|downlink>
 sudo ./tools/experiment/netem.sh clear <iface>
 ```
 
 In practice, use the wrapper scripts instead of calling this directly:
-`tools/experiment/netem-client.sh up`/`down` (aliases path IPs + applies `src`-based
-uplink shaping) and `tools/experiment/netem-server.sh up`/`down` (`dst`-based
-downlink shaping). See `TODO.md` -> Link emulation / testbed for the
+- Trace-emulated LTE/LEO: `tools/experiment/netem-client.sh up`/`down`
+  (aliases path IPs + applies `src`-based uplink shaping) and
+  `tools/experiment/netem-server.sh up`/`down` (`dst`-based downlink
+  shaping).
+- Flight-measured mesh/private-5G/satellite: same pattern, via
+  `tools/experiment/netem-client-flight.sh` and
+  `tools/experiment/netem-server-flight.sh`.
+
+Run one scenario's pair of scripts or the other, not both at once, on a
+given interface. See `TODO.md` -> Link emulation / testbed for the
 current setup (a direct Ethernet link between two Ubuntu hosts).
 
 ## Known limitation

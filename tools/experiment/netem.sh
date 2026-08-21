@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# tc/netem link emulation for LTE-like and LEO-like paths, parameterized
-# from docs/link-characteristics.md (Baltaci et al. 2023 measurements).
+# tc/netem link emulation for two scenarios, parameterized from
+# docs/link-characteristics.md:
+#   - lte/leo: trace-emulated -- Baltaci et al. 2023 (IEEE Access), whose
+#     own MPTCP/MP-DCCP transport experiments ran on a testbed
+#     parameterized from real traces, not literal flights.
+#   - mesh/p5g/sat: flight-measured -- Baltaci et al. 2026 (arXiv
+#     2604.27640), Table I "static ground measurements", validated
+#     against that paper's own real UAV flight experiments.
 # Linux only (iproute2 tc). Run on BOTH client and server hosts -- each
 # host only shapes its own egress, so e.g. LTE's uplink delay goes on the
 # client's egress and LTE's downlink delay goes on the server's egress;
 # the sum of both hosts' one-way delay is the modeled RTT contribution.
 #
 # Usage (self-elevates via sudo if not already root):
-#   ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>
+#   ./tools/experiment/netem.sh setup <iface> <match-ip> <src|dst> <lte|leo|mesh|p5g|sat> <uplink|downlink>
 #   ./tools/experiment/netem.sh clear <iface>
 #
 # On the CLIENT: match-ip is one of the -local source IPs the client
@@ -30,6 +36,12 @@
 # spikes not modeled here). Add periodic spike/rate-change injection
 # (a timer loop re-running `tc qdisc change`) if handover behavior
 # specifically needs testing.
+#
+# ponytail: mesh/p5g/sat delay/rate are derived from Table I's RTT and
+# "achievable data rate" point estimates (halving RTT for one-way delay,
+# per this script's existing lte/leo convention) -- jitter and loss are
+# left at 0 rather than invented, since Table I doesn't report either.
+# Only sat gets nonzero jitter, from its one reported range (150-200ms).
 set -euo pipefail
 
 # Self-elevate: ip/tc need root. Lets callers skip typing sudo themselves.
@@ -45,8 +57,18 @@ lte_delay() { # $1=direction -> "avg jitter" (ms), from measured latency
 }
 leo_delay() { echo "25ms 13ms"; } # symmetric per paper (12-38ms range)
 
+# Table I gives RTT, not one-way delay -- halved here to match this
+# script's lte/leo convention of applying one-way delay on each host's
+# egress (client + server), summing back to the reported RTT.
+mesh_delay() { echo "2.5ms 0ms"; }   # ~5ms RTT, no range reported -> no jitter
+p5g_delay()  { echo "15ms 0ms"; }    # ~30ms RTT, no range reported -> no jitter
+sat_delay()  { echo "87.5ms 12.5ms"; } # 150-200ms RTT -> avg 175ms, +-25ms range
+
 lte_loss="0.006%"
 leo_loss="0.17%"
+mesh_loss="0%" # not reported in Table I
+p5g_loss="0%"  # not reported in Table I
+sat_loss="0%"  # not reported in Table I
 
 lte_rate() { echo "30mbit"; } # midpoint of measured ~15-45Mbps fluctuation
 leo_rate() { # $1=direction -> fixed asymmetric capacity per paper
@@ -55,9 +77,12 @@ leo_rate() { # $1=direction -> fixed asymmetric capacity per paper
     downlink) echo "62mbit" ;;
   esac
 }
+mesh_rate() { echo "30mbit"; } # Table I: ">30 Mbit/s" floor, symmetric
+p5g_rate()  { echo "5mbit"; }  # Table I: "~5 Mbit/s", symmetric
+sat_rate()  { echo "5mbit"; }  # Table I: "~5 Mbit/s", symmetric
 
 usage() {
-  echo "usage: $0 setup <iface> <match-ip> <src|dst> <lte|leo> <uplink|downlink>" >&2
+  echo "usage: $0 setup <iface> <match-ip> <src|dst> <lte|leo|mesh|p5g|sat> <uplink|downlink>" >&2
   echo "       $0 clear <iface>" >&2
   exit 1
 }
@@ -88,9 +113,12 @@ classid=$(echo "$match_ip" | awk -F. '{print $NF}')
 case "$classid" in ''|*[!0-9]*) echo "match-ip must be an IPv4 address" >&2; exit 1 ;; esac
 
 case "$profile" in
-  lte) delay=$(lte_delay "$direction"); loss=$lte_loss; rate=$(lte_rate) ;;
-  leo) delay=$(leo_delay); loss=$leo_loss; rate=$(leo_rate "$direction") ;;
-  *) echo "unknown profile: $profile (want lte|leo)" >&2; exit 1 ;;
+  lte)  delay=$(lte_delay "$direction"); loss=$lte_loss;  rate=$(lte_rate) ;;
+  leo)  delay=$(leo_delay);              loss=$leo_loss;  rate=$(leo_rate "$direction") ;;
+  mesh) delay=$(mesh_delay);             loss=$mesh_loss; rate=$(mesh_rate) ;;
+  p5g)  delay=$(p5g_delay);              loss=$p5g_loss;  rate=$(p5g_rate) ;;
+  sat)  delay=$(sat_delay);              loss=$sat_loss;  rate=$(sat_rate) ;;
+  *) echo "unknown profile: $profile (want lte|leo|mesh|p5g|sat)" >&2; exit 1 ;;
 esac
 
 # root htb qdisc, created once per interface; safe to call setup

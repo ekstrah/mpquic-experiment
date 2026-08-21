@@ -71,8 +71,11 @@ cmd/
 
 tools/
   experiment/             netem.sh + netem-client.sh/netem-server.sh (LTE/LEO
-                          link emulation) and run-client.sh/run-server.sh
-                          (paper's burst config, one scheduler per run)
+                          link emulation) + netem-client-flight.sh/
+                          netem-server-flight.sh (aerial mesh/private 5G/
+                          satellite link emulation) and run-client.sh/
+                          run-server.sh (paper's burst config, one
+                          scheduler per run)
   viewing/
     results-viewer.html   standalone (no build step) browser tool: drag in
                           the CSVs both binaries write, get charts. Detects
